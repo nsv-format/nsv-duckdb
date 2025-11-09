@@ -25,3 +25,8 @@ build/
 # Test outputs
 output.nsv
 *.duckdb.*
+test_ffi
+
+# Rust
+rust-ffi/target/
+rust-ffi/Cargo.lock
