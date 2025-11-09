@@ -7,7 +7,6 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
-#include "duckdb/main/extension_util.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
 
 #include <fstream>
@@ -127,7 +126,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register read_nsv table function
 	TableFunction read_nsv_func("read_nsv", {LogicalType::VARCHAR}, ReadNSVScan, ReadNSVBind, ReadNSVInit);
 	read_nsv_func.name = "read_nsv";
-	ExtensionUtil::RegisterFunction(loader, read_nsv_func);
+	loader.RegisterFunction(read_nsv_func);
 }
 
 void NsvExtension::Load(ExtensionLoader &loader) {

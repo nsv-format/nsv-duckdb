@@ -30,3 +30,7 @@ test_ffi
 # Rust
 rust-ffi/target/
 rust-ffi/Cargo.lock
+
+# Build logs
+build*.log
+*.log
