@@ -1,0 +1,38 @@
+cd rust-ffi && cargo build --release
+    Finished `release` profile [optimized] target(s) in 0.03s
+mkdir -p build/release && \
+cd build/release && \
+cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS="nsv" /home/user/nsv-duckdb/duckdb && \
+make duckdb_nsv
+-- Found Python3: /usr/local/bin/python3 (found version "3.11.14") found components: Interpreter 
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE  
+-- Found Git: /usr/bin/git (found version "2.43.0") 
+-- git hash 44b706b2b7, version v1.5.0-dev2368, extension folder 44b706b2b7
+-- Extensions will be deployed to: /home/user/nsv-duckdb/build/release/repository
+-- Load extension 'nsv' from '/home/user/nsv-duckdb/duckdb/extensions' @ 44b706b2b7
+-- Load extension 'core_functions' from '/home/user/nsv-duckdb/duckdb/extensions' @ 44b706b2b7
+-- Load extension 'parquet' from '/home/user/nsv-duckdb/duckdb/extensions' @ 44b706b2b7
+-- Load extension 'jemalloc' from '/home/user/nsv-duckdb/duckdb/extensions' @ 44b706b2b7
+-- Found NSV library: /home/user/nsv-duckdb/rust-ffi/target/release/libnsv_ffi.so
+-- Extensions linked into DuckDB: [nsv, core_functions, parquet, jemalloc]
+-- Configuring done (13.1s)
+-- Generating done (5.3s)
+-- Build files have been written to: /home/user/nsv-duckdb/build/release
+make[1]: Entering directory '/home/user/nsv-duckdb/build/release'
+make[1]: *** No rule to make target 'duckdb_nsv'.  Stop.
+make[1]: Leaving directory '/home/user/nsv-duckdb/build/release'
+make: *** [Makefile:18: extension] Error 2

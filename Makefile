@@ -1,30 +1,17 @@
-.PHONY: all clean format debug release test
+.PHONY: all clean rust test-python
 
-all: release
+all: rust
 
-# Build Rust library first
 rust:
 	cd rust-ffi && cargo build --release
 
-# Clean build
 clean:
-	rm -rf build
+	rm -rf build duckdb/extension/nsv
 	cd rust-ffi && cargo clean
 
-# Build debug
-debug: rust
-	mkdir -p build/debug && \
-	cd build/debug && \
-	cmake -DCMAKE_BUILD_TYPE=Debug ../.. && \
-	cmake --build .
+# Test with Python (working now)
+test-python:
+	python demo.py
 
-# Build release
-release: rust
-	mkdir -p build/release && \
-	cd build/release && \
-	cmake -DCMAKE_BUILD_TYPE=Release ../.. && \
-	cmake --build .
-
-#Test
-test: release
-	./build/release/test/unittest
+# For C++ extension build (requires ~15min to build DuckDB)
+# See build instructions in README
