@@ -1,16 +1,25 @@
 # NSV-DuckDB
 
-DuckDB extension for [NSV](https://github.com/nsv-format/nsv) (Newline-Separated Values) format.
+Loadable DuckDB extension for [NSV](https://github.com/nsv-format/nsv) (Newline-Separated Values) format.
+
+## Quick Start
+
+```bash
+# Download or build the extension, then load it in DuckDB:
+duckdb -unsigned
+D LOAD './nsv.duckdb_extension';
+D SELECT * FROM read_nsv('examples/users.nsv');
+```
 
 ## Architecture
 
-- **Rust** - NSV parser from crates.io (nsv 0.0.2) with FFI wrapper in `rust-ffi/`
-- **C++** - DuckDB table function (in `src/nsv_extension.cpp`)
+- **Rust** - NSV parser from nsv-rust repository with FFI wrapper
+- **C++** - DuckDB loadable extension using table function API
 - **Python** - Working PoC using Rust FFI via ctypes
 
-No pandas dependency. Uses nsv crate from crates.io.
+No pandas dependency. Uses nsv from crates.io.
 
-## Quick Start
+## Python Demo (Quick Alternative)
 
 ```bash
 # Build Rust library (uses nsv from crates.io)
@@ -54,36 +63,43 @@ Bob
 
 **Escaping:** `\` = empty, `\n` = newline, `\\` = backslash
 
-## Building C++ Extension
+## Building the Extension
 
-The C++ extension is now **fully functional** and built into DuckDB. To build DuckDB with the NSV extension:
+The extension is built using the [DuckDB extension-template](https://github.com/duckdb/extension-template):
 
 ```bash
-# Build Rust FFI library
-cd rust-ffi && cargo build --release && cd ..
+# Clone and setup extension-template
+git clone https://github.com/duckdb/extension-template.git
+cd extension-template
+python3 scripts/bootstrap-template.py nsv
 
-# Build DuckDB with NSV extension (takes ~15 minutes)
-mkdir -p build/release && cd build/release
-cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS="nsv" ../../duckdb
-make shell -j4
-cd ../..
+# Add nsv-rust parser
+git submodule add https://github.com/nsv-format/nsv-rust.git vendor/nsv-rust
+git submodule update --init --recursive
+
+# Copy NSV extension files from this repo:
+# - rust-glue/ (Rust FFI wrapper)
+# - src/nsv_extension.cpp (C++ extension code)
+# - CMakeLists.txt (build configuration)
+
+# Build (takes ~30 minutes)
+make
+
+# Output: build/release/extension/nsv/nsv.duckdb_extension
 ```
 
-The NSV extension is statically linked into DuckDB and available immediately - no `LOAD` command needed.
-
-### Using the Extension
+### Using the Loadable Extension
 
 ```bash
-# Query NSV files directly
-./build/release/duckdb
-
-# In DuckDB shell:
+# Load and query NSV files with any DuckDB installation:
+duckdb -unsigned
+D LOAD './nsv.duckdb_extension';
 D SELECT * FROM read_nsv('examples/users.nsv');
 D SELECT * FROM read_nsv('data.nsv') WHERE CAST(age AS INT) > 25;
 D SELECT city, COUNT(*) FROM read_nsv('users.nsv') GROUP BY city;
 ```
 
-This uses the Rust parser via FFI - no reimplementation needed.
+The `-unsigned` flag allows loading unsigned extensions for development.
 
 ## Files
 
@@ -96,12 +112,14 @@ This uses the Rust parser via FFI - no reimplementation needed.
 
 ## Status
 
-**Fully functional!**
+**Loadable extension working!**
 - ✅ Python demo working (uses Rust via FFI)
-- ✅ C++ extension built and tested
-- ✅ DuckDB CLI can query NSV files with `read_nsv()`
+- ✅ C++ loadable extension built and tested
+- ✅ Works with any DuckDB installation via `LOAD` command
 - ✅ Supports WHERE, GROUP BY, JOIN, and all SQL operations
+- ✅ Uses Rust parser via FFI (no reimplementation needed)
 
-Tested with DuckDB v1.5.0-dev2368.
+Extension size: ~11MB (includes Rust parser)
+Tested with DuckDB v1.4.1+
 
 More: https://github.com/nsv-format/nsv
