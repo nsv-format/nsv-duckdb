@@ -56,11 +56,31 @@ Bob
 
 ## Building C++ Extension
 
-The full C++ extension is in `src/nsv_extension.cpp`. To build as a loadable DuckDB extension:
+The C++ extension is now **fully functional** and built into DuckDB. To build DuckDB with the NSV extension:
 
 ```bash
-# Requires DuckDB build environment
-make release
+# Build Rust FFI library
+cd rust-ffi && cargo build --release && cd ..
+
+# Build DuckDB with NSV extension (takes ~15 minutes)
+mkdir -p build/release && cd build/release
+cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_EXTENSIONS="nsv" ../../duckdb
+make shell -j4
+cd ../..
+```
+
+The NSV extension is statically linked into DuckDB and available immediately - no `LOAD` command needed.
+
+### Using the Extension
+
+```bash
+# Query NSV files directly
+./build/release/duckdb
+
+# In DuckDB shell:
+D SELECT * FROM read_nsv('examples/users.nsv');
+D SELECT * FROM read_nsv('data.nsv') WHERE CAST(age AS INT) > 25;
+D SELECT city, COUNT(*) FROM read_nsv('users.nsv') GROUP BY city;
 ```
 
 This uses the Rust parser via FFI - no reimplementation needed.
@@ -76,9 +96,12 @@ This uses the Rust parser via FFI - no reimplementation needed.
 
 ## Status
 
-**PoC complete.**
+**Fully functional!**
 - ✅ Python demo working (uses Rust via FFI)
-- ✅ C++ extension code written
-- ⏳ DuckDB submodule cloning (required for C++ build)
+- ✅ C++ extension built and tested
+- ✅ DuckDB CLI can query NSV files with `read_nsv()`
+- ✅ Supports WHERE, GROUP BY, JOIN, and all SQL operations
+
+Tested with DuckDB v1.5.0-dev2368.
 
 More: https://github.com/nsv-format/nsv
