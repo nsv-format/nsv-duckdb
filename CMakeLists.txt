@@ -1,0 +1,35 @@
+cmake_minimum_required(VERSION 3.5)
+
+# Set extension name here
+set(TARGET_NAME nsv)
+
+set(EXTENSION_NAME ${TARGET_NAME}_extension)
+set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
+
+project(${TARGET_NAME})
+include_directories(src/include)
+
+set(EXTENSION_SOURCES src/nsv_extension.cpp)
+
+# Find the Rust NSV library
+find_library(NSV_LIB nsv HINTS "${CMAKE_CURRENT_SOURCE_DIR}/../nsv-rust/target/release")
+if(NOT NSV_LIB)
+    message(FATAL_ERROR "Could not find libnsv. Build nsv-rust first with 'cargo build --release'")
+endif()
+
+build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
+build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
+
+# Link NSV Rust library
+target_link_libraries(${EXTENSION_NAME} ${NSV_LIB})
+target_link_libraries(${LOADABLE_EXTENSION_NAME} ${NSV_LIB})
+
+# Add Rust library include path
+target_include_directories(${EXTENSION_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+target_include_directories(${LOADABLE_EXTENSION_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include})
+
+install(
+  TARGETS ${EXTENSION_NAME}
+  EXPORT "${DUCKDB_EXPORT_SET}"
+  LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
+  ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")

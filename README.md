@@ -2,40 +2,44 @@
 
 DuckDB extension for [NSV](https://github.com/nsv-format/nsv) (Newline-Separated Values) format.
 
-## Install
+## Architecture
+
+- **Rust** - NSV parser (from nsv-rust) exposed via C FFI
+- **C++** - DuckDB table function (in `src/nsv_extension.cpp`)
+- **Python** - Working PoC using Rust FFI via ctypes
+
+No pandas dependency. Parser is in Rust, integrated via FFI.
+
+## Quick Start
 
 ```bash
-pip install -r requirements.txt
+# Build Rust library
+cd ../nsv-rust && cargo build --release && cd ../nsv-duckdb
+
+# Run demo
+python demo.py
 ```
 
 ## Usage
 
 ```python
 import duckdb
-from nsv_ext import read_nsv, to_nsv
+from nsv_duckdb import read_nsv, to_nsv
 
 con = duckdb.connect()
 
-# Read
-data = read_nsv('file.nsv', con)
+# Read NSV
+users = read_nsv('users.nsv', con)
 
-# Query
-con.register('data', data)
-result = con.query("SELECT * FROM data WHERE col > 10")
+# Query with SQL
+con.register('users', users)
+result = con.query("SELECT * FROM users WHERE age > 25")
 
-# Write
+# Write NSV
 to_nsv(result, 'output.nsv')
 ```
 
-## Demo
-
-```bash
-python demo.py
-```
-
 ## NSV Format
-
-Cells separated by newlines, rows by double newlines:
 
 ```nsv
 name
@@ -48,6 +52,30 @@ Bob
 25
 ```
 
-**Escaping:** Empty=`\`, Newline=`\n`, Backslash=`\\`
+**Escaping:** `\` = empty, `\n` = newline, `\\` = backslash
+
+## Building C++ Extension
+
+The full C++ extension is in `src/nsv_extension.cpp`. To build as a loadable DuckDB extension:
+
+```bash
+# Requires DuckDB build environment
+make release
+```
+
+This uses the Rust parser via FFI - no reimplementation needed.
+
+## Files
+
+- `src/nsv_extension.cpp` - C++ DuckDB table function
+- `src/include/nsv_ffi.h` - C FFI header
+- `nsv_duckdb.py` - Python PoC using Rust FFI
+- `../nsv-rust/src/ffi.rs` - Rust FFI wrapper
+- `demo.py` - Working demonstration
+- `test_ffi.c` - C FFI test
+
+## Status
+
+**PoC complete.** Python demo works. C++ extension code written, needs DuckDB build system to compile.
 
 More: https://github.com/nsv-format/nsv
