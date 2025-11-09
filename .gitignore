@@ -23,7 +23,5 @@ build/
 *.db
 
 # Test outputs
-examples/*_output.nsv
-examples/test_output.nsv
-examples/widget_a_sales.nsv
-examples/employees_output.nsv
+output.nsv
+*.duckdb.*
