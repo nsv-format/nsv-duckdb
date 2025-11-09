@@ -1,0 +1,23 @@
+id
+description
+notes
+
+1
+Simple product
+Basic item
+
+2
+Product with\nnewline
+This has a newline in the description
+
+3
+\
+This row has an empty description
+
+4
+Backslash test: \\
+Testing backslash escaping
+
+5
+Multi\nline\ntext
+Lines: 1\nLines: 2\nLines: 3
