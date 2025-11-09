@@ -4,12 +4,12 @@ all: release
 
 # Build Rust library first
 rust:
-	cd ../nsv-rust && cargo build --release
+	cd rust-ffi && cargo build --release
 
 # Clean build
 clean:
 	rm -rf build
-	cd ../nsv-rust && cargo clean
+	cd rust-ffi && cargo clean
 
 # Build debug
 debug: rust

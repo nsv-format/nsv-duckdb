@@ -4,17 +4,17 @@ DuckDB extension for [NSV](https://github.com/nsv-format/nsv) (Newline-Separated
 
 ## Architecture
 
-- **Rust** - NSV parser (from nsv-rust) exposed via C FFI
+- **Rust** - NSV parser from crates.io (nsv 0.0.2) with FFI wrapper in `rust-ffi/`
 - **C++** - DuckDB table function (in `src/nsv_extension.cpp`)
 - **Python** - Working PoC using Rust FFI via ctypes
 
-No pandas dependency. Parser is in Rust, integrated via FFI.
+No pandas dependency. Uses nsv crate from crates.io.
 
 ## Quick Start
 
 ```bash
-# Build Rust library
-cd ../nsv-rust && cargo build --release && cd ../nsv-duckdb
+# Build Rust library (uses nsv from crates.io)
+cd rust-ffi && cargo build --release && cd ..
 
 # Run demo
 python demo.py
@@ -69,13 +69,16 @@ This uses the Rust parser via FFI - no reimplementation needed.
 
 - `src/nsv_extension.cpp` - C++ DuckDB table function
 - `src/include/nsv_ffi.h` - C FFI header
+- `rust-ffi/` - Rust crate with FFI wrapper (uses nsv from crates.io)
 - `nsv_duckdb.py` - Python PoC using Rust FFI
-- `../nsv-rust/src/ffi.rs` - Rust FFI wrapper
 - `demo.py` - Working demonstration
 - `test_ffi.c` - C FFI test
 
 ## Status
 
-**PoC complete.** Python demo works. C++ extension code written, needs DuckDB build system to compile.
+**PoC complete.**
+- ✅ Python demo working (uses Rust via FFI)
+- ✅ C++ extension code written
+- ⏳ DuckDB submodule cloning (required for C++ build)
 
 More: https://github.com/nsv-format/nsv

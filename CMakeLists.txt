@@ -12,9 +12,9 @@ include_directories(src/include)
 set(EXTENSION_SOURCES src/nsv_extension.cpp)
 
 # Find the Rust NSV library
-find_library(NSV_LIB nsv HINTS "${CMAKE_CURRENT_SOURCE_DIR}/../nsv-rust/target/release")
+find_library(NSV_LIB nsv_ffi HINTS "${CMAKE_CURRENT_SOURCE_DIR}/rust-ffi/target/release")
 if(NOT NSV_LIB)
-    message(FATAL_ERROR "Could not find libnsv. Build nsv-rust first with 'cargo build --release'")
+    message(FATAL_ERROR "Could not find libnsv_ffi. Build rust-ffi first with 'cd rust-ffi && cargo build --release'")
 endif()
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

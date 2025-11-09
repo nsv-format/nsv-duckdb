@@ -12,9 +12,9 @@ import duckdb
 from pathlib import Path
 
 # Load Rust library
-LIB_PATH = Path(__file__).parent.parent / "nsv-rust/target/release/libnsv.so"
+LIB_PATH = Path(__file__).parent / "rust-ffi/target/release/libnsv_ffi.so"
 if not LIB_PATH.exists():
-    raise RuntimeError(f"Rust library not found at {LIB_PATH}. Run: cd ../nsv-rust && cargo build --release")
+    raise RuntimeError(f"Rust library not found at {LIB_PATH}. Run: cd rust-ffi && cargo build --release")
 
 lib = ctypes.CDLL(str(LIB_PATH))
 
