@@ -19,8 +19,15 @@ __pycache__/
 *.pyo
 output.nsv
 
-# Rust
-rust-glue/target/
+# Rust build artifacts (keep the pre-built .a file)
+rust-glue/target/debug/
+rust-glue/target/release/deps/
+rust-glue/target/release/build/
+rust-glue/target/release/incremental/
+rust-glue/target/release/*.d
+rust-glue/target/release/*.rlib
+rust-glue/target/.rustc_info.json
+rust-glue/target/CACHEDIR.TAG
 rust-glue/Cargo.lock
 
 # Build logs

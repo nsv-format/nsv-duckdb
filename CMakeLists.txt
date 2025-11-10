@@ -13,27 +13,37 @@ include_directories(src/include)
 set(RUST_GLUE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust-glue)
 set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/release/libnsv_ffi.a)
 
-# Check if cargo is available
-find_program(CARGO_EXECUTABLE cargo)
-if(NOT CARGO_EXECUTABLE)
-    message(FATAL_ERROR "Cargo not found. Please install Rust from https://rustup.rs/")
+# Check if pre-built library exists
+if(EXISTS ${RUST_GLUE_LIB})
+    message(STATUS "Using pre-built Rust library: ${RUST_GLUE_LIB}")
+else()
+    # Pre-built library not found, try to build with cargo
+    find_program(CARGO_EXECUTABLE cargo)
+    if(NOT CARGO_EXECUTABLE)
+        message(FATAL_ERROR "Pre-built Rust library not found and cargo not available. Please install Rust from https://rustup.rs/ or use a repository with pre-built libraries.")
+    endif()
+
+    message(STATUS "Building Rust FFI with cargo...")
+    add_custom_command(
+        OUTPUT ${RUST_GLUE_LIB}
+        COMMAND ${CARGO_EXECUTABLE} build --release
+        WORKING_DIRECTORY ${RUST_GLUE_DIR}
+        COMMENT "Building Rust FFI"
+    )
+    add_custom_target(rust_glue_build DEPENDS ${RUST_GLUE_LIB})
 endif()
-
-add_custom_command(
-    OUTPUT ${RUST_GLUE_LIB}
-    COMMAND ${CARGO_EXECUTABLE} build --release
-    WORKING_DIRECTORY ${RUST_GLUE_DIR}
-    COMMENT "Building Rust FFI"
-)
-
-add_custom_target(rust_glue_build DEPENDS ${RUST_GLUE_LIB})
-
-add_library(rust_glue STATIC IMPORTED)
-set_target_properties(rust_glue PROPERTIES IMPORTED_LOCATION ${RUST_GLUE_LIB})
-add_dependencies(rust_glue rust_glue_build)
 
 # Add rust-glue headers to include path
 include_directories(${RUST_GLUE_DIR})
+
+# Create imported library target
+add_library(rust_glue STATIC IMPORTED)
+set_target_properties(rust_glue PROPERTIES IMPORTED_LOCATION ${RUST_GLUE_LIB})
+
+# Only add dependency if we're building (not using pre-built)
+if(TARGET rust_glue_build)
+    add_dependencies(rust_glue rust_glue_build)
+endif()
 
 set(EXTENSION_SOURCES src/nsv_extension.cpp)
 
@@ -41,8 +51,6 @@ build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
 # Link Rust FFI library
-add_dependencies(${EXTENSION_NAME} rust_glue_build)
-add_dependencies(${LOADABLE_EXTENSION_NAME} rust_glue_build)
 target_link_libraries(${EXTENSION_NAME} rust_glue)
 target_link_libraries(${LOADABLE_EXTENSION_NAME} rust_glue)
 
