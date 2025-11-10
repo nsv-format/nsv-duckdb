@@ -13,9 +13,15 @@ include_directories(src/include)
 set(RUST_GLUE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust-glue)
 set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/release/libnsv_ffi.a)
 
+# Check if cargo is available
+find_program(CARGO_EXECUTABLE cargo)
+if(NOT CARGO_EXECUTABLE)
+    message(FATAL_ERROR "Cargo not found. Please install Rust from https://rustup.rs/")
+endif()
+
 add_custom_command(
     OUTPUT ${RUST_GLUE_LIB}
-    COMMAND cargo build --release
+    COMMAND ${CARGO_EXECUTABLE} build --release
     WORKING_DIRECTORY ${RUST_GLUE_DIR}
     COMMENT "Building Rust FFI"
 )

@@ -1,0 +1,46 @@
+#
+# Custom workflow for NSV extension that installs Rust before building
+#
+name: NSV Extension CI
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: true
+
+jobs:
+  # Format check doesn't need Rust
+  code-quality-check:
+    name: Code Quality Check
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.1
+    with:
+      duckdb_version: v1.4.1
+      ci_tools_version: v1.4.1
+      extension_name: nsv
+      format_checks: 'format;tidy'
+
+  # Custom build job with Rust setup
+  linux-build:
+    name: Linux Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build extension
+        run: |
+          make
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: linux-extension
+          path: build/release/extension/nsv/nsv.duckdb_extension

@@ -15,38 +15,8 @@ D SELECT * FROM read_nsv('examples/users.nsv');
 
 - **Rust** - NSV parser from nsv-rust repository with FFI wrapper
 - **C++** - DuckDB loadable extension using table function API
-- **Python** - Working PoC using Rust FFI via ctypes
 
-No pandas dependency. Uses nsv from crates.io.
-
-## Python Demo (Quick Alternative)
-
-```bash
-# Build Rust library (uses nsv from crates.io)
-cd rust-ffi && cargo build --release && cd ..
-
-# Run demo
-python demo.py
-```
-
-## Usage
-
-```python
-import duckdb
-from nsv_duckdb import read_nsv, to_nsv
-
-con = duckdb.connect()
-
-# Read NSV
-users = read_nsv('users.nsv', con)
-
-# Query with SQL
-con.register('users', users)
-result = con.query("SELECT * FROM users WHERE age > 25")
-
-# Write NSV
-to_nsv(result, 'output.nsv')
-```
+The extension uses the Rust NSV parser via FFI (no code duplication).
 
 ## NSV Format
 
@@ -65,24 +35,19 @@ Bob
 
 ## Building the Extension
 
-The extension is built using the [DuckDB extension-template](https://github.com/duckdb/extension-template):
+**Prerequisites:**
+- [Rust toolchain](https://rustup.rs/) - Required for building the NSV parser
+- CMake 3.5+
+- C++ compiler
+
+**Build:**
 
 ```bash
-# Clone and setup extension-template
-git clone https://github.com/duckdb/extension-template.git
-cd extension-template
-python3 scripts/bootstrap-template.py nsv
+# Clone with submodules
+git clone --recursive https://github.com/nsv-format/nsv-duckdb.git
+cd nsv-duckdb
 
-# Add nsv-rust parser
-git submodule add https://github.com/nsv-format/nsv-rust.git vendor/nsv-rust
-git submodule update --init --recursive
-
-# Copy NSV extension files from this repo:
-# - rust-glue/ (Rust FFI wrapper)
-# - src/nsv_extension.cpp (C++ extension code)
-# - CMakeLists.txt (build configuration)
-
-# Build (takes ~30 minutes)
+# Build (takes ~30 minutes first time)
 make
 
 # Output: build/release/extension/nsv/nsv.duckdb_extension
