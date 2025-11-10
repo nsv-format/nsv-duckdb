@@ -24,6 +24,8 @@ rust-glue/target/debug/
 rust-glue/target/release/deps/
 rust-glue/target/release/build/
 rust-glue/target/release/incremental/
+rust-glue/target/release/.fingerprint/
+rust-glue/target/release/.cargo-lock
 rust-glue/target/release/*.d
 rust-glue/target/release/*.rlib
 rust-glue/target/.rustc_info.json
