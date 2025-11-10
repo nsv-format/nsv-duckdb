@@ -1,0 +1,17 @@
+# name: test/sql/nsv.test
+# description: Test NSV extension
+# group: [nsv]
+
+# Load the extension
+require nsv
+
+# Create a test NSV file
+statement ok
+COPY (SELECT 'Alice' as name, 30 as age, 'NYC' as city UNION ALL SELECT 'Bob', 25, 'SF') TO 'test.nsv' (FORMAT CSV);
+
+# Read the NSV file
+query III
+SELECT * FROM read_nsv('test.nsv');
+----
+Alice	30	NYC
+Bob	25	SF

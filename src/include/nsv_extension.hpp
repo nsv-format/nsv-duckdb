@@ -6,7 +6,7 @@ namespace duckdb {
 
 class NsvExtension : public Extension {
 public:
-	void Load(ExtensionLoader &loader) override;
+	void Load(ExtensionLoader &db) override;
 	std::string Name() override;
 	std::string Version() const override;
 };

@@ -1,17 +1,8 @@
-.PHONY: all clean rust test-python
+PROJ_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 
-all: rust
+# Configuration of extension
+EXT_NAME=nsv
+EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-rust:
-	cd rust-ffi && cargo build --release
-
-clean:
-	rm -rf build duckdb/extension/nsv
-	cd rust-ffi && cargo clean
-
-# Test with Python (working now)
-test-python:
-	python demo.py
-
-# For C++ extension build (requires ~15min to build DuckDB)
-# See build instructions in README
+# Include the Makefile from extension-ci-tools
+include extension-ci-tools/makefiles/duckdb_extension.Makefile

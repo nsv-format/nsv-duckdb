@@ -1,36 +1,27 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-*.egg-info/
-dist/
-build/
-
-# IDE
+*.o
+*.os
+.vs/
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-
-# DuckDB
+*.user
+/build/
+/cmake-build-*/
+/.vs
+/out/
+CMakeSettings.json
+.DS_Store
 *.duckdb
-*.db
+*.duckdb.wal
 
-# Test outputs
+# Python
+__pycache__/
+*.pyc
+*.pyo
 output.nsv
-*.duckdb.*
-test_ffi
 
 # Rust
-rust-ffi/target/
-rust-ffi/Cargo.lock
+rust-glue/target/
+rust-glue/Cargo.lock
 
 # Build logs
-build*.log
 *.log

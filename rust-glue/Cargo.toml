@@ -3,8 +3,8 @@ name = "nsv-ffi"
 version = "0.1.0"
 edition = "2021"
 
-[lib]
-crate-type = ["cdylib", "staticlib"]
-
 [dependencies]
-nsv = "0.0.2"
+nsv = { path = "../vendor/nsv-rust" }
+
+[lib]
+crate-type = ["staticlib"]
