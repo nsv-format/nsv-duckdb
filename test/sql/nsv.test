@@ -1,6 +1,6 @@
 # name: test/sql/nsv.test
 # description: Test NSV extension
-# group: [nsv]
+# group: [sql]
 
 # Load the extension
 require nsv
