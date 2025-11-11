@@ -57,12 +57,15 @@ pub extern "C" fn nsv_parse_file(filename: *const c_char) -> *mut CNsvResult {
         std::mem::forget(row_vec);
     }
 
-    Box::into_raw(Box::new(CNsvResult {
+    let result = Box::into_raw(Box::new(CNsvResult {
         rows: rows_vec.as_mut_ptr(),
         nrows,
         ncols: ncols_vec.as_mut_ptr(),
         error: ptr::null_mut(),
-    }))
+    }));
+    std::mem::forget(rows_vec);
+    std::mem::forget(ncols_vec);
+    result
 }
 
 #[no_mangle]
