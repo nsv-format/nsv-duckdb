@@ -5,9 +5,9 @@
 # Load the extension
 require nsv
 
-# Create a test NSV file
+# Create a test NSV file manually (each value on its own line, blank lines between records)
 statement ok
-COPY (SELECT 'Alice' as name, 30 as age, 'NYC' as city UNION ALL SELECT 'Bob', 25, 'SF') TO 'test.nsv' (FORMAT CSV);
+COPY (SELECT 'name' UNION ALL SELECT 'age' UNION ALL SELECT 'city' UNION ALL SELECT '' UNION ALL SELECT 'Alice' UNION ALL SELECT '30' UNION ALL SELECT 'NYC' UNION ALL SELECT '' UNION ALL SELECT 'Bob' UNION ALL SELECT '25' UNION ALL SELECT 'SF') TO 'test.nsv' (FORMAT CSV, HEADER false, QUOTE '');
 
 # Read the NSV file
 query III
