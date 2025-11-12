@@ -11,7 +11,15 @@ include_directories(src/include)
 
 # Build Rust FFI
 set(RUST_GLUE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust-glue)
-set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/release/libnsv_ffi.a)
+
+# Detect if we're on a musl system and set appropriate library path
+if(DEFINED __MUSL_ENABLED__)
+    set(RUST_TARGET "x86_64-unknown-linux-musl")
+    set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/${RUST_TARGET}/release/libnsv_ffi.a)
+    message(STATUS "Detected musl system, using Rust target: ${RUST_TARGET}")
+else()
+    set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/release/libnsv_ffi.a)
+endif()
 
 # Check if pre-built library exists
 if(EXISTS ${RUST_GLUE_LIB})
@@ -24,12 +32,21 @@ else()
     endif()
 
     message(STATUS "Building Rust FFI with cargo...")
-    add_custom_command(
-        OUTPUT ${RUST_GLUE_LIB}
-        COMMAND ${CARGO_EXECUTABLE} build --release
-        WORKING_DIRECTORY ${RUST_GLUE_DIR}
-        COMMENT "Building Rust FFI"
-    )
+    if(DEFINED RUST_TARGET)
+        add_custom_command(
+            OUTPUT ${RUST_GLUE_LIB}
+            COMMAND ${CARGO_EXECUTABLE} build --release --target ${RUST_TARGET}
+            WORKING_DIRECTORY ${RUST_GLUE_DIR}
+            COMMENT "Building Rust FFI for ${RUST_TARGET}"
+        )
+    else()
+        add_custom_command(
+            OUTPUT ${RUST_GLUE_LIB}
+            COMMAND ${CARGO_EXECUTABLE} build --release
+            WORKING_DIRECTORY ${RUST_GLUE_DIR}
+            COMMENT "Building Rust FFI"
+        )
+    endif()
     add_custom_target(rust_glue_build DEPENDS ${RUST_GLUE_LIB})
 endif()
 
