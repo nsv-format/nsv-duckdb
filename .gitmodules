@@ -1,0 +1,10 @@
+[submodule "duckdb"]
+	path = duckdb
+	url = https://github.com/duckdb/duckdb.git
+	ignore = untracked
+[submodule "extension-ci-tools"]
+	path = extension-ci-tools
+	url = https://github.com/duckdb/extension-ci-tools
+[submodule "vendor/nsv-rust"]
+	path = vendor/nsv-rust
+	url = https://github.com/nsv-format/nsv-rust.git
