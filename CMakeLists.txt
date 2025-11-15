@@ -13,7 +13,7 @@ include_directories(src/include)
 set(RUST_GLUE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust-glue)
 
 # Detect if we're on a musl system and set appropriate library path
-if(DEFINED __MUSL_ENABLED__)
+if(MUSL_ENABLED)
     set(RUST_TARGET "x86_64-unknown-linux-musl")
     set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/${RUST_TARGET}/release/libnsv_ffi.a)
     message(STATUS "Detected musl system, using Rust target: ${RUST_TARGET}")
