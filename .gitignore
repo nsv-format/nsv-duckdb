@@ -1,17 +1,23 @@
+# Build artifacts
 *.o
 *.os
+/build/
+/cmake-build-*/
+/out/
+CMakeSettings.json
+
+# IDE files
 .vs/
 .vscode/
 .idea/
 *.user
-/build/
-/cmake-build-*/
-/.vs
-/out/
-CMakeSettings.json
 .DS_Store
+
+# DuckDB files
 *.duckdb
 *.duckdb.wal
+*.duckdb_extension
+duckdb_unittest_tempdir/
 
 # Python
 __pycache__/
@@ -19,7 +25,8 @@ __pycache__/
 *.pyo
 output.nsv
 
-# Rust build artifacts (keep the pre-built .a files)
+# Rust build artifacts
+# Note: Keep pre-built static libraries (*.a) for CI
 rust-glue/target/debug/
 rust-glue/target/release/deps/
 rust-glue/target/release/build/
@@ -40,5 +47,5 @@ rust-glue/target/.rustc_info.json
 rust-glue/target/CACHEDIR.TAG
 rust-glue/Cargo.lock
 
-# Build logs
+# Logs
 *.log
