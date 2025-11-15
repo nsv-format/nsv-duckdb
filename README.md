@@ -5,15 +5,17 @@ A loadable [DuckDB](https://duckdb.org/) extension for reading and writing [NSV 
 ## Quick Start
 
 ```sql
--- Load the extension
+-- Load the extension (use absolute path on macOS)
 LOAD './build/release/extension/nsv/nsv.duckdb_extension';
 
--- Read an NSV file
+-- Read an NSV file (all columns are VARCHAR by default)
 SELECT * FROM read_nsv('examples/users.nsv');
 
 -- Query with filters, aggregations, etc.
+-- Use CAST() for type conversions
 SELECT city, COUNT(*) as count
 FROM read_nsv('examples/users.nsv')
+WHERE CAST(age AS INTEGER) > 25
 GROUP BY city;
 ```
 
@@ -92,8 +94,15 @@ make
 
 **macOS:**
 ```bash
+# If pre-built Linux libraries exist, remove them first
+rm -f rust-glue/target/release/libnsv_ffi.a
+rm -f rust-glue/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
+
+# Build (will compile Rust for your platform)
 make
 ```
+
+**Note:** macOS requires absolute paths when loading extensions due to hardened runtime. See "Using the Extension" below.
 
 **Windows:**
 ```bash
@@ -106,17 +115,29 @@ cmake --build build --config Release
 
 ### Load the Extension
 
+**Linux:**
 ```bash
-# Start DuckDB with unsigned extension support
 duckdb -unsigned
-
-# Load the extension
+```
+```sql
 D LOAD './build/release/extension/nsv/nsv.duckdb_extension';
 ```
 
-Or in code:
+**macOS:**
+```bash
+duckdb -unsigned
+```
 ```sql
-LOAD '/path/to/nsv.duckdb_extension';
+-- macOS requires absolute paths due to hardened runtime
+D LOAD '/absolute/path/to/nsv-duckdb/build/release/extension/nsv/nsv.duckdb_extension';
+```
+
+**Tip:** Use `$(pwd)` to get the absolute path:
+```bash
+duckdb -unsigned << EOF
+LOAD '$(pwd)/build/release/extension/nsv/nsv.duckdb_extension';
+SELECT * FROM read_nsv('examples/users.nsv');
+EOF
 ```
 
 ### Read NSV Files
@@ -138,6 +159,52 @@ JOIN read_nsv('orders.nsv') o ON u.id = o.user_id;
 ```
 
 **Note:** All columns are read as `VARCHAR`. Use `CAST()` for type conversions.
+
+## Troubleshooting
+
+### macOS: "relative path not allowed in hardened program"
+
+**Error:**
+```
+IO Error: Extension "./build/..." could not be loaded:
+dlopen(...) (relative path not allowed in hardened program)
+```
+
+**Solution:** Use an absolute path instead of a relative path:
+```sql
+-- Replace this with your actual path
+LOAD '/Users/yourname/nsv-duckdb/build/release/extension/nsv/nsv.duckdb_extension';
+```
+
+### "The file was built for DuckDB version X and can only be loaded with that version"
+
+**Error:**
+```
+Invalid Input Error: Failed to load '...', The file was built specifically
+for DuckDB version '...' (this version of DuckDB is 'v1.4.1')
+```
+
+**Solution:** The DuckDB submodule may be out of sync. Update it to v1.4.1:
+```bash
+git submodule update --init --recursive
+make clean
+make
+```
+
+### macOS/ARM64: "ld: archive member '/' not a mach-o file"
+
+**Error:**
+```
+ld: archive member '/' not a mach-o file in '.../libnsv_ffi.a'
+```
+
+**Solution:** Pre-built Linux libraries are incompatible with macOS. Remove them and rebuild:
+```bash
+rm -f rust-glue/target/release/libnsv_ffi.a
+rm -f rust-glue/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
+make clean
+make
+```
 
 ## Development
 
