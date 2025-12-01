@@ -8,3 +8,6 @@
 [submodule "vendor/nsv-rust"]
 	path = vendor/nsv-rust
 	url = https://github.com/nsv-format/nsv-rust.git
+[submodule "vendor/nsv-spec"]
+	path = vendor/nsv-spec
+	url = https://github.com/nsv-format/nsv.git
