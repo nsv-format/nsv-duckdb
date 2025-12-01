@@ -8,15 +8,16 @@ A loadable [DuckDB](https://duckdb.org/) extension for reading and writing [NSV 
 -- Load the extension (use absolute path on macOS)
 LOAD './build/release/extension/nsv/nsv.duckdb_extension';
 
--- Read an NSV file (all columns are VARCHAR by default)
+-- Read an NSV file (types are auto-detected)
 SELECT * FROM read_nsv('examples/users.nsv');
 
--- Query with filters, aggregations, etc.
--- Use CAST() for type conversions
-SELECT city, COUNT(*) as count
+-- Types are automatically narrowed - no CAST needed for numeric operations
+SELECT city, AVG(age) as avg_age
 FROM read_nsv('examples/users.nsv')
-WHERE CAST(age AS INTEGER) > 25
 GROUP BY city;
+
+-- Force all columns to VARCHAR (disable type detection)
+SELECT * FROM read_nsv('examples/users.nsv', all_varchar=true);
 ```
 
 ## What is NSV?
@@ -143,22 +144,38 @@ EOF
 ### Read NSV Files
 
 ```sql
--- Basic read
+-- Basic read (types auto-detected)
 SELECT * FROM read_nsv('data.nsv');
 
--- With filters
-SELECT * FROM read_nsv('users.nsv') WHERE CAST(age AS INT) > 25;
+-- With filters (no CAST needed - types are auto-detected)
+SELECT * FROM read_nsv('users.nsv') WHERE age > 25;
 
--- Aggregations
-SELECT city, COUNT(*) FROM read_nsv('users.nsv') GROUP BY city;
+-- Aggregations work directly on numeric columns
+SELECT city, COUNT(*), AVG(salary) FROM read_nsv('users.nsv') GROUP BY city;
 
 -- Joins
 SELECT u.name, o.order_id
 FROM read_nsv('users.nsv') u
 JOIN read_nsv('orders.nsv') o ON u.id = o.user_id;
+
+-- Disable type detection (all columns as VARCHAR)
+SELECT * FROM read_nsv('data.nsv', all_varchar=true);
 ```
 
-**Note:** All columns are read as `VARCHAR`. Use `CAST()` for type conversions.
+### Type Detection
+
+The extension automatically detects and narrows column types by sampling data:
+
+| Detected Type | Example Values |
+|---------------|----------------|
+| `BOOLEAN` | `true`, `false`, `TRUE`, `FALSE` |
+| `BIGINT` | `42`, `-100`, `9999999` |
+| `DOUBLE` | `3.14`, `-0.5`, `1.0e10` |
+| `DATE` | `2024-01-15` |
+| `TIMESTAMP` | `2024-01-15 10:30:00` |
+| `VARCHAR` | Everything else (fallback) |
+
+Use `all_varchar=true` to disable type detection and keep all columns as strings.
 
 ## Troubleshooting
 
