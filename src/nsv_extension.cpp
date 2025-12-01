@@ -16,12 +16,9 @@ namespace duckdb {
 // Type candidates in order of priority (most specific to least specific)
 // Based on DuckDB CSV sniffer approach
 static const vector<LogicalType> TYPE_CANDIDATES = {
-    LogicalType::BOOLEAN,
-    LogicalType::BIGINT,
-    LogicalType::DOUBLE,
-    LogicalType::DATE,
-    LogicalType::TIMESTAMP,
-    LogicalType::VARCHAR  // Fallback - always succeeds
+    LogicalType::BOOLEAN, LogicalType::BIGINT,    LogicalType::DOUBLE,
+    LogicalType::DATE,    LogicalType::TIMESTAMP,
+    LogicalType::VARCHAR // Fallback - always succeeds
 };
 
 struct NSVBindData : public TableFunctionData {
@@ -61,12 +58,12 @@ static LogicalType DetectColumnType(ClientContext &ctx, CNsvResult *data,
     for (idx_t row = start_row; row < end_row && all_cast_ok; row++) {
       // Check if column exists in this row
       if (col_idx >= data->ncols[row]) {
-        continue;  // Treat as NULL, which casts to anything
+        continue; // Treat as NULL, which casts to anything
       }
 
       char *cell = data->rows[row][col_idx];
       if (!cell || strlen(cell) == 0) {
-        continue;  // NULL/empty casts to anything
+        continue; // NULL/empty casts to anything
       }
 
       has_non_null = true;
@@ -78,7 +75,7 @@ static LogicalType DetectColumnType(ClientContext &ctx, CNsvResult *data,
       string error_msg;
 
       if (!str_val.TryCastAs(ctx, candidate_type, result_val, &error_msg,
-                             true)) {  // strict=true to prevent truncation
+                             true)) { // strict=true to prevent truncation
         all_cast_ok = false;
       }
     }
@@ -232,7 +229,7 @@ std::string NsvExtension::Version() const {
 #endif
 }
 
-}  // namespace duckdb
+} // namespace duckdb
 
 extern "C" {
 
