@@ -19,6 +19,7 @@ jobs:
       duckdb_version: v1.4.1
       ci_tools_version: v1.4.1
       extension_name: nsv
+      extra_toolchains: rust
 
   code-quality-check:
     name: Code Quality Check
@@ -28,3 +29,39 @@ jobs:
       ci_tools_version: v1.4.1
       extension_name: nsv
       format_checks: 'format;tidy'
+
+  release:
+    name: Create GitHub Release
+    needs: duckdb-stable-build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: nsv-v1.4.1-extension-*
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for dir in artifacts/*/; do
+            arch=$(basename "$dir" | sed 's/nsv-v1.4.1-extension-//')
+            for file in "$dir"*; do
+              if [ -f "$file" ]; then
+                ext="${file##*.}"
+                cp "$file" "release/nsv-${arch}.${ext}"
+              fi
+            done
+          done
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}

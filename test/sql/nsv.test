@@ -5,13 +5,66 @@
 # Load the extension
 require nsv
 
-# Create a test NSV file manually (each value on its own line, blank lines between records)
+# Create a test NSV file with mixed types
+# Format: each value on its own line, blank lines between records
 statement ok
-COPY (SELECT 'name' UNION ALL SELECT 'age' UNION ALL SELECT 'city' UNION ALL SELECT '' UNION ALL SELECT 'Alice' UNION ALL SELECT '30' UNION ALL SELECT 'NYC' UNION ALL SELECT '' UNION ALL SELECT 'Bob' UNION ALL SELECT '25' UNION ALL SELECT 'SF') TO 'test.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+COPY (SELECT 'name' UNION ALL SELECT 'age' UNION ALL SELECT 'salary' UNION ALL SELECT 'active' UNION ALL SELECT '' UNION ALL SELECT 'Alice' UNION ALL SELECT '30' UNION ALL SELECT '50000.50' UNION ALL SELECT 'true' UNION ALL SELECT '' UNION ALL SELECT 'Bob' UNION ALL SELECT '25' UNION ALL SELECT '75000.25' UNION ALL SELECT 'false') TO '__TEST_DIR__/types.nsv' (FORMAT CSV, HEADER false, QUOTE '');
 
-# Read the NSV file
-query III
-SELECT * FROM read_nsv('test.nsv');
+# Test type narrowing - age should be BIGINT, salary should be DOUBLE, active should be BOOLEAN
+query IIII
+SELECT typeof(name), typeof(age), typeof(salary), typeof(active) FROM read_nsv('__TEST_DIR__/types.nsv') LIMIT 1;
 ----
-Alice	30	NYC
-Bob	25	SF
+VARCHAR	BIGINT	DOUBLE	BOOLEAN
+
+# Verify values are correctly parsed
+query ITRI
+SELECT name, age, salary, active FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+Alice	30	50000.5	true
+Bob	25	75000.25	false
+
+# Test all_varchar option - should keep everything as VARCHAR
+query IIII
+SELECT typeof(name), typeof(age), typeof(salary), typeof(active) FROM read_nsv('__TEST_DIR__/types.nsv', all_varchar=true) LIMIT 1;
+----
+VARCHAR	VARCHAR	VARCHAR	VARCHAR
+
+# Values should be strings when all_varchar=true
+query TTTT
+SELECT name, age, salary, active FROM read_nsv('__TEST_DIR__/types.nsv', all_varchar=true);
+----
+Alice	30	50000.50	true
+Bob	25	75000.25	false
+
+# Test with pure string data (no type narrowing possible)
+statement ok
+COPY (SELECT 'city' UNION ALL SELECT 'country' UNION ALL SELECT '' UNION ALL SELECT 'NYC' UNION ALL SELECT 'USA' UNION ALL SELECT '' UNION ALL SELECT 'London' UNION ALL SELECT 'UK') TO '__TEST_DIR__/strings.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query II
+SELECT typeof(city), typeof(country) FROM read_nsv('__TEST_DIR__/strings.nsv') LIMIT 1;
+----
+VARCHAR	VARCHAR
+
+query TT
+SELECT * FROM read_nsv('__TEST_DIR__/strings.nsv');
+----
+NYC	USA
+London	UK
+
+# Test arithmetic works on narrowed integer types
+query I
+SELECT SUM(age) FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+55
+
+# Test arithmetic works on narrowed double types
+query R
+SELECT SUM(salary) FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+125000.75
+
+# Test boolean filtering
+query T
+SELECT name FROM read_nsv('__TEST_DIR__/types.nsv') WHERE active = true;
+----
+Alice
