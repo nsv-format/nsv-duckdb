@@ -12,11 +12,40 @@ include_directories(src/include)
 # Build Rust FFI
 set(RUST_GLUE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust-glue)
 
-# Detect if we're on a musl system and set appropriate library path
-if(MUSL_ENABLED)
-    set(RUST_TARGET "x86_64-unknown-linux-musl")
+# Detect target architecture and OS to set appropriate Rust target
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        if(MUSL_ENABLED)
+            set(RUST_TARGET "aarch64-unknown-linux-musl")
+        else()
+            set(RUST_TARGET "aarch64-unknown-linux-gnu")
+        endif()
+    else()
+        # Default to x86_64
+        if(MUSL_ENABLED)
+            set(RUST_TARGET "x86_64-unknown-linux-musl")
+        else()
+            set(RUST_TARGET "x86_64-unknown-linux-gnu")
+        endif()
+    endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+        set(RUST_TARGET "aarch64-apple-darwin")
+    else()
+        set(RUST_TARGET "x86_64-apple-darwin")
+    endif()
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(RUST_TARGET "x86_64-pc-windows-msvc")
+endif()
+
+# Set library path based on target
+if(DEFINED RUST_TARGET)
     set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/${RUST_TARGET}/release/libnsv_ffi.a)
-    message(STATUS "Detected musl system, using Rust target: ${RUST_TARGET}")
+    # Windows uses .lib extension
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+        set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/${RUST_TARGET}/release/nsv_ffi.lib)
+    endif()
+    message(STATUS "Using Rust target: ${RUST_TARGET}")
 else()
     set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/release/libnsv_ffi.a)
 endif()
@@ -33,6 +62,12 @@ else()
 
     message(STATUS "Building Rust FFI with cargo...")
     if(DEFINED RUST_TARGET)
+        # Install the target if needed (will be a no-op if already installed)
+        execute_process(
+            COMMAND rustup target add ${RUST_TARGET}
+            WORKING_DIRECTORY ${RUST_GLUE_DIR}
+            RESULT_VARIABLE RUSTUP_RESULT
+        )
         add_custom_command(
             OUTPUT ${RUST_GLUE_LIB}
             COMMAND ${CARGO_EXECUTABLE} build --release --target ${RUST_TARGET}

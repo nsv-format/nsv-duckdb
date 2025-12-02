@@ -25,26 +25,8 @@ __pycache__/
 *.pyo
 output.nsv
 
-# Rust build artifacts
-# Note: Keep pre-built static libraries (*.a) for CI
-rust-glue/target/debug/
-rust-glue/target/release/deps/
-rust-glue/target/release/build/
-rust-glue/target/release/incremental/
-rust-glue/target/release/.fingerprint/
-rust-glue/target/release/.cargo-lock
-rust-glue/target/release/*.d
-rust-glue/target/release/*.rlib
-rust-glue/target/x86_64-unknown-linux-musl/CACHEDIR.TAG
-rust-glue/target/x86_64-unknown-linux-musl/release/deps/
-rust-glue/target/x86_64-unknown-linux-musl/release/build/
-rust-glue/target/x86_64-unknown-linux-musl/release/incremental/
-rust-glue/target/x86_64-unknown-linux-musl/release/.fingerprint/
-rust-glue/target/x86_64-unknown-linux-musl/release/.cargo-lock
-rust-glue/target/x86_64-unknown-linux-musl/release/*.d
-rust-glue/target/x86_64-unknown-linux-musl/release/*.rlib
-rust-glue/target/.rustc_info.json
-rust-glue/target/CACHEDIR.TAG
+# Rust build artifacts (CI builds fresh each time)
+rust-glue/target/
 rust-glue/Cargo.lock
 
 # Logs
