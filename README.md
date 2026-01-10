@@ -1,6 +1,6 @@
 # NSV DuckDB Extension
 
-A loadable [DuckDB](https://duckdb.org/) extension for reading and writing [NSV (Newline-Separated Values)](https://github.com/nsv-format/nsv) files.
+A loadable [DuckDB](https://duckdb.org/) extension for reading [NSV (Newline-Separated Values)](https://github.com/nsv-format/nsv) files.
 
 ## Quick Start
 
@@ -281,6 +281,26 @@ This extension follows the licensing of its components:
 - NSV parser: MIT (see `vendor/nsv-rust/`)
 - DuckDB: MIT
 - This extension code: MIT
+
+## Project Status
+
+| Feature | Status |
+|---------|--------|
+| **Core** | |
+| `read_nsv()` table function | ✅ Working |
+| NSV parsing (escaping, empty cells, ragged rows) | ✅ Working |
+| Type narrowing (BOOLEAN, BIGINT, DOUBLE, DATE, TIMESTAMP) | ✅ Working |
+| `all_varchar` option | ✅ Working |
+| **Build & Distribution** | |
+| Build from source (Linux, macOS, Windows) | ✅ Working |
+| GitHub Actions CI | ✅ Working |
+| GitHub Releases (on tag) | ✅ Configured |
+| DuckDB Community Extensions | ❌ Not submitted |
+| **Not Implemented** | |
+| `write_nsv()` / `COPY TO NSV` | ❌ |
+| File globbing (`*.nsv`) | ❌ |
+| Streaming large files | ❌ |
+| ENSV metadata support | ❌ |
 
 ## Links
 
