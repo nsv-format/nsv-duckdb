@@ -77,10 +77,14 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 target_link_libraries(${EXTENSION_NAME} rust_ffi)
 target_link_libraries(${LOADABLE_EXTENSION_NAME} rust_ffi)
 
-# Rust staticlib on Windows MSVC needs these system libraries
-if(WIN32 AND MSVC)
+# Rust staticlib needs platform-specific system libraries
+if(WIN32)
+    set(RUST_SYS_LIBS ws2_32 bcrypt userenv ntdll)
+    if(MINGW)
+        list(APPEND RUST_SYS_LIBS pthread gcc_eh)
+    endif()
     foreach(tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
-        target_link_libraries(${tgt} ws2_32 bcrypt userenv ntdll)
+        target_link_libraries(${tgt} ${RUST_SYS_LIBS})
     endforeach()
 endif()
 
