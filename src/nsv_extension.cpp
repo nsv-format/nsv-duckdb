@@ -103,8 +103,8 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
   fs.Read(*file_handle, (void *)buffer.data(), file_size);
 
   // Decode via Rust FFI
-  result->handle =
-      nsv_decode(reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
+  result->handle = nsv_decode(reinterpret_cast<const uint8_t *>(buffer.data()),
+                              buffer.size());
   if (!result->handle) {
     throw InvalidInputException("Failed to parse NSV file: %s",
                                 result->filename);
@@ -130,8 +130,7 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
       result->types.push_back(LogicalType::VARCHAR);
     } else {
       // Sample up to 1000 data rows (starting at row 1)
-      auto detected =
-          DetectColumnType(ctx, result->handle, i, 1, 1000);
+      auto detected = DetectColumnType(ctx, result->handle, i, 1, 1000);
       result->types.push_back(detected);
     }
   }
@@ -141,8 +140,8 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
   return std::move(result);
 }
 
-static unique_ptr<GlobalTableFunctionState>
-NSVInit(ClientContext &, TableFunctionInitInput &) {
+static unique_ptr<GlobalTableFunctionState> NSVInit(ClientContext &,
+                                                    TableFunctionInitInput &) {
   return make_uniq<NSVScanState>();
 }
 
@@ -234,9 +233,10 @@ struct NSVWriteGlobalState : public GlobalFunctionData {
 
 struct NSVWriteLocalState : public LocalFunctionData {};
 
-static unique_ptr<FunctionData>
-NSVWriteBind(ClientContext &, CopyFunctionBindInput &input,
-             const vector<string> &names, const vector<LogicalType> &types) {
+static unique_ptr<FunctionData> NSVWriteBind(ClientContext &,
+                                             CopyFunctionBindInput &input,
+                                             const vector<string> &names,
+                                             const vector<LogicalType> &types) {
   auto result = make_uniq<NSVWriteBindData>();
   result->names = names;
   result->types = types;
@@ -262,8 +262,8 @@ NSVWriteInitGlobal(ClientContext &ctx, FunctionData &bind_data,
   return std::move(result);
 }
 
-static unique_ptr<LocalFunctionData>
-NSVWriteInitLocal(ExecutionContext &, FunctionData &) {
+static unique_ptr<LocalFunctionData> NSVWriteInitLocal(ExecutionContext &,
+                                                       FunctionData &) {
   return make_uniq<NSVWriteLocalState>();
 }
 
@@ -292,9 +292,9 @@ static void NSVWriteSink(ExecutionContext &, FunctionData &bind_data,
         nsv_encoder_push_null(state.encoder);
       } else {
         auto str = val.ToString();
-        nsv_encoder_push_cell(
-            state.encoder,
-            reinterpret_cast<const uint8_t *>(str.data()), str.size());
+        nsv_encoder_push_cell(state.encoder,
+                              reinterpret_cast<const uint8_t *>(str.data()),
+                              str.size());
       }
     }
     nsv_encoder_end_row(state.encoder);
