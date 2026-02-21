@@ -1,44 +1,45 @@
 # name: test/sql/nsv.test
-# description: Test NSV extension
+# description: Test NSV extension — read_nsv and COPY TO
 # group: [sql]
 
-# Load the extension
 require nsv
 
-# Create a test NSV file with mixed types
-# Format: each value on its own line, blank lines between records
-statement ok
-COPY (SELECT 'name' UNION ALL SELECT 'age' UNION ALL SELECT 'salary' UNION ALL SELECT 'active' UNION ALL SELECT '' UNION ALL SELECT 'Alice' UNION ALL SELECT '30' UNION ALL SELECT '50000.50' UNION ALL SELECT 'true' UNION ALL SELECT '' UNION ALL SELECT 'Bob' UNION ALL SELECT '25' UNION ALL SELECT '75000.25' UNION ALL SELECT 'false') TO '__TEST_DIR__/types.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+# ── read_nsv: type narrowing ────────────────────────────────────────
 
-# Test type narrowing - age should be BIGINT, salary should be DOUBLE, active should be BOOLEAN
+# Create a test file with mixed types using CSV as a writer trick
+statement ok
+COPY (SELECT * FROM (VALUES ('name'),('age'),('salary'),('active'),(''),('Alice'),('30'),('50000.50'),('true'),(''),('Bob'),('25'),('75000.25'),('false'),(''))) TO '__TEST_DIR__/types.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+# Types should be auto-detected
 query IIII
 SELECT typeof(name), typeof(age), typeof(salary), typeof(active) FROM read_nsv('__TEST_DIR__/types.nsv') LIMIT 1;
 ----
 VARCHAR	BIGINT	DOUBLE	BOOLEAN
 
-# Verify values are correctly parsed
+# Values should parse correctly
 query ITRI
 SELECT name, age, salary, active FROM read_nsv('__TEST_DIR__/types.nsv');
 ----
 Alice	30	50000.5	true
 Bob	25	75000.25	false
 
-# Test all_varchar option - should keep everything as VARCHAR
+# ── read_nsv: all_varchar ───────────────────────────────────────────
+
 query IIII
 SELECT typeof(name), typeof(age), typeof(salary), typeof(active) FROM read_nsv('__TEST_DIR__/types.nsv', all_varchar=true) LIMIT 1;
 ----
 VARCHAR	VARCHAR	VARCHAR	VARCHAR
 
-# Values should be strings when all_varchar=true
 query TTTT
 SELECT name, age, salary, active FROM read_nsv('__TEST_DIR__/types.nsv', all_varchar=true);
 ----
 Alice	30	50000.50	true
 Bob	25	75000.25	false
 
-# Test with pure string data (no type narrowing possible)
+# ── read_nsv: pure strings ──────────────────────────────────────────
+
 statement ok
-COPY (SELECT 'city' UNION ALL SELECT 'country' UNION ALL SELECT '' UNION ALL SELECT 'NYC' UNION ALL SELECT 'USA' UNION ALL SELECT '' UNION ALL SELECT 'London' UNION ALL SELECT 'UK') TO '__TEST_DIR__/strings.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+COPY (SELECT * FROM (VALUES ('city'),('country'),(''),('NYC'),('USA'),(''),('London'),('UK'),(''))) TO '__TEST_DIR__/strings.nsv' (FORMAT CSV, HEADER false, QUOTE '');
 
 query II
 SELECT typeof(city), typeof(country) FROM read_nsv('__TEST_DIR__/strings.nsv') LIMIT 1;
@@ -51,20 +52,44 @@ SELECT * FROM read_nsv('__TEST_DIR__/strings.nsv');
 NYC	USA
 London	UK
 
-# Test arithmetic works on narrowed integer types
+# ── read_nsv: aggregations on narrowed types ────────────────────────
+
 query I
 SELECT SUM(age) FROM read_nsv('__TEST_DIR__/types.nsv');
 ----
 55
 
-# Test arithmetic works on narrowed double types
 query R
 SELECT SUM(salary) FROM read_nsv('__TEST_DIR__/types.nsv');
 ----
 125000.75
 
-# Test boolean filtering
+# ── read_nsv: boolean filtering ─────────────────────────────────────
+
 query T
 SELECT name FROM read_nsv('__TEST_DIR__/types.nsv') WHERE active = true;
 ----
 Alice
+
+# ── COPY TO nsv: roundtrip ──────────────────────────────────────────
+
+# Write a table out as NSV
+statement ok
+CREATE TABLE roundtrip_src AS SELECT * FROM read_nsv('__TEST_DIR__/types.nsv');
+
+statement ok
+COPY roundtrip_src TO '__TEST_DIR__/roundtrip.nsv' (FORMAT nsv);
+
+# Read it back — should match
+query ITRI
+SELECT name, age, salary, active FROM read_nsv('__TEST_DIR__/roundtrip.nsv');
+----
+Alice	30	50000.5	true
+Bob	25	75000.25	false
+
+# ── COPY TO nsv: types preserved through roundtrip ──────────────────
+
+query IIII
+SELECT typeof(name), typeof(age), typeof(salary), typeof(active) FROM read_nsv('__TEST_DIR__/roundtrip.nsv') LIMIT 1;
+----
+VARCHAR	BIGINT	DOUBLE	BOOLEAN
