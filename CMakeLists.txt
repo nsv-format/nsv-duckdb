@@ -1,75 +1,88 @@
 cmake_minimum_required(VERSION 3.5)
 
-# Set extension name here
 set(TARGET_NAME nsv)
-
 set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
 project(${TARGET_NAME})
 include_directories(src/include)
 
-# Build Rust FFI
-set(RUST_GLUE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust-glue)
+# ── Rust FFI ─────────────────────────────────────────────────────────
+set(RUST_FFI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/rust-ffi)
 
-# Detect if we're on a musl system and set appropriate library path
-if(MUSL_ENABLED)
+find_program(CARGO_EXECUTABLE cargo)
+if(NOT CARGO_EXECUTABLE)
+    message(FATAL_ERROR "Cargo not found. Install Rust from https://rustup.rs/")
+endif()
+
+# Determine Rust target triple.
+# 1) Rust_CARGO_TARGET is set by the DuckDB CI Makefile for macOS/mingw cross-compilation.
+# 2) Fall back to DUCKDB_EXPLICIT_PLATFORM for musl/windows MSVC.
+# 3) If neither is set, use the host default.
+if(DEFINED Rust_CARGO_TARGET AND NOT Rust_CARGO_TARGET STREQUAL "")
+    set(RUST_TARGET "${Rust_CARGO_TARGET}")
+elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "linux_amd64_musl")
     set(RUST_TARGET "x86_64-unknown-linux-musl")
-    set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/${RUST_TARGET}/release/libnsv_ffi.a)
-    message(STATUS "Detected musl system, using Rust target: ${RUST_TARGET}")
+elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "windows_amd64")
+    set(RUST_TARGET "x86_64-pc-windows-msvc")
+elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "windows_arm64")
+    set(RUST_TARGET "aarch64-pc-windows-msvc")
+endif()
+
+# Determine library output path and filename.
+# Rust staticlib produces libfoo.a on Unix and foo.lib on MSVC.
+if(DEFINED RUST_TARGET)
+    set(RUST_OUTPUT_DIR ${RUST_FFI_DIR}/target/${RUST_TARGET}/release)
 else()
-    set(RUST_GLUE_LIB ${RUST_GLUE_DIR}/target/release/libnsv_ffi.a)
+    set(RUST_OUTPUT_DIR ${RUST_FFI_DIR}/target/release)
 endif()
 
-# Check if pre-built library exists
-if(EXISTS ${RUST_GLUE_LIB})
-    message(STATUS "Using pre-built Rust library: ${RUST_GLUE_LIB}")
+if(RUST_TARGET MATCHES "windows-msvc")
+    set(RUST_FFI_LIB ${RUST_OUTPUT_DIR}/nsv_ffi.lib)
 else()
-    # Pre-built library not found, try to build with cargo
-    find_program(CARGO_EXECUTABLE cargo)
-    if(NOT CARGO_EXECUTABLE)
-        message(FATAL_ERROR "Pre-built Rust library not found and cargo not available. Please install Rust from https://rustup.rs/ or use a repository with pre-built libraries.")
-    endif()
-
-    message(STATUS "Building Rust FFI with cargo...")
-    if(DEFINED RUST_TARGET)
-        add_custom_command(
-            OUTPUT ${RUST_GLUE_LIB}
-            COMMAND ${CARGO_EXECUTABLE} build --release --target ${RUST_TARGET}
-            WORKING_DIRECTORY ${RUST_GLUE_DIR}
-            COMMENT "Building Rust FFI for ${RUST_TARGET}"
-        )
-    else()
-        add_custom_command(
-            OUTPUT ${RUST_GLUE_LIB}
-            COMMAND ${CARGO_EXECUTABLE} build --release
-            WORKING_DIRECTORY ${RUST_GLUE_DIR}
-            COMMENT "Building Rust FFI"
-        )
-    endif()
-    add_custom_target(rust_glue_build DEPENDS ${RUST_GLUE_LIB})
+    set(RUST_FFI_LIB ${RUST_OUTPUT_DIR}/libnsv_ffi.a)
 endif()
 
-# Add rust-glue headers to include path
-include_directories(${RUST_GLUE_DIR})
+message(STATUS "Rust FFI target: ${RUST_TARGET}")
+message(STATUS "Rust FFI lib: ${RUST_FFI_LIB}")
 
-# Create imported library target
-add_library(rust_glue STATIC IMPORTED)
-set_target_properties(rust_glue PROPERTIES IMPORTED_LOCATION ${RUST_GLUE_LIB})
-
-# Only add dependency if we're building (not using pre-built)
-if(TARGET rust_glue_build)
-    add_dependencies(rust_glue rust_glue_build)
+if(DEFINED RUST_TARGET)
+    add_custom_command(
+        OUTPUT ${RUST_FFI_LIB}
+        COMMAND ${CARGO_EXECUTABLE} build --release --target ${RUST_TARGET}
+        WORKING_DIRECTORY ${RUST_FFI_DIR}
+        COMMENT "Building Rust FFI (target: ${RUST_TARGET})"
+    )
+else()
+    add_custom_command(
+        OUTPUT ${RUST_FFI_LIB}
+        COMMAND ${CARGO_EXECUTABLE} build --release
+        WORKING_DIRECTORY ${RUST_FFI_DIR}
+        COMMENT "Building Rust FFI"
+    )
 endif()
 
+add_custom_target(rust_ffi_build DEPENDS ${RUST_FFI_LIB})
+
+add_library(rust_ffi STATIC IMPORTED)
+set_target_properties(rust_ffi PROPERTIES IMPORTED_LOCATION ${RUST_FFI_LIB})
+add_dependencies(rust_ffi rust_ffi_build)
+
+# ── Extension ────────────────────────────────────────────────────────
 set(EXTENSION_SOURCES src/nsv_extension.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 
-# Link Rust FFI library
-target_link_libraries(${EXTENSION_NAME} rust_glue)
-target_link_libraries(${LOADABLE_EXTENSION_NAME} rust_glue)
+target_link_libraries(${EXTENSION_NAME} rust_ffi)
+target_link_libraries(${LOADABLE_EXTENSION_NAME} rust_ffi)
+
+# Rust staticlib needs platform-specific system libraries
+if(WIN32)
+    foreach(tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
+        target_link_libraries(${tgt} ws2_32 bcrypt userenv ntdll)
+    endforeach()
+endif()
 
 install(
   TARGETS ${EXTENSION_NAME}

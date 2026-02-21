@@ -14,19 +14,19 @@ concurrency:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.1
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.2
     with:
-      duckdb_version: v1.4.1
-      ci_tools_version: v1.4.1
+      duckdb_version: v1.4.2
+      ci_tools_version: v1.4.2
       extension_name: nsv
       extra_toolchains: rust
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.1
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.2
     with:
-      duckdb_version: v1.4.1
-      ci_tools_version: v1.4.1
+      duckdb_version: v1.4.2
+      ci_tools_version: v1.4.2
       extension_name: nsv
       format_checks: 'format;tidy'
 
@@ -42,13 +42,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: nsv-v1.4.1-extension-*
+          pattern: nsv-v1.4.2-extension-*
 
       - name: Prepare release assets
         run: |
           mkdir -p release
           for dir in artifacts/*/; do
-            arch=$(basename "$dir" | sed 's/nsv-v1.4.1-extension-//')
+            arch=$(basename "$dir" | sed 's/nsv-v1.4.2-extension-//')
             for file in "$dir"*; do
               if [ -f "$file" ]; then
                 ext="${file##*.}"
