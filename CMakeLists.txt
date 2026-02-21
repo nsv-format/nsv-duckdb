@@ -77,11 +77,13 @@ build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 target_link_libraries(${EXTENSION_NAME} rust_ffi)
 target_link_libraries(${LOADABLE_EXTENSION_NAME} rust_ffi)
 
-# Rust staticlib needs platform-specific system libraries
+# Rust staticlib needs platform-specific system libraries.
+# Set as INTERFACE on the imported target so they propagate transitively
+# to all targets that link rust_ffi (including DuckDB internals like
+# test_sqlite3_api_wrapper, parquet, etc. on the mingw build).
 if(WIN32)
-    foreach(tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
-        target_link_libraries(${tgt} ws2_32 bcrypt userenv ntdll)
-    endforeach()
+    set_target_properties(rust_ffi PROPERTIES
+        INTERFACE_LINK_LIBRARIES "ws2_32;bcrypt;userenv;ntdll")
 endif()
 
 install(
