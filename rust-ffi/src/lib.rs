@@ -193,9 +193,136 @@ pub extern "C" fn nsv_lazy_cell(
     h.scratch.as_ptr() as *const c_char
 }
 
+/// Pointer to the raw input bytes owned by the lazy handle.
+///
+/// Valid until `nsv_lazy_free`.  Allows the caller to re-use the buffer
+/// for a projected re-decode without copying.
+#[no_mangle]
+pub extern "C" fn nsv_lazy_input_ptr(handle: *const LazyNsvHandle) -> *const u8 {
+    if handle.is_null() {
+        return std::ptr::null();
+    }
+    unsafe { (*handle).input.as_ptr() }
+}
+
+/// Length of the raw input bytes owned by the lazy handle.
+#[no_mangle]
+pub extern "C" fn nsv_lazy_input_len(handle: *const LazyNsvHandle) -> usize {
+    if handle.is_null() {
+        return 0;
+    }
+    unsafe { (*handle).input.len() }
+}
+
 /// Free a lazy handle returned by `nsv_decode_lazy`.
 #[no_mangle]
 pub extern "C" fn nsv_lazy_free(handle: *mut LazyNsvHandle) {
+    if !handle.is_null() {
+        unsafe { drop(Box::from_raw(handle)) };
+    }
+}
+
+// ── Projected decode (flat storage, only requested columns) ─────────
+
+/// Opaque handle for projected NSV data.
+///
+/// Stores the raw input bytes and a flat structural index that only
+/// contains spans for the requested columns.  Single allocation for
+/// the span array instead of one `Vec` per row.
+pub struct ProjectedNsvHandle {
+    /// Owned copy of the raw input (or shared with LazyNsvHandle if
+    /// constructed via `nsv_decode_projected_from`).
+    input: Vec<u8>,
+    /// Number of projected columns (stride of the flat array).
+    stride: usize,
+    num_rows: usize,
+    /// Flat: `spans[row * stride + proj_col_idx]`.
+    spans: Vec<nsv::CellSpan>,
+    /// Scratch buffer for the most recently unescaped cell.
+    scratch: Vec<u8>,
+}
+
+/// Decode a byte buffer with column projection — only indexes specified columns.
+///
+/// `col_indices` is an array of `num_cols` 0-based column indices to project.
+/// Returns null on null input.  Caller must free with `nsv_projected_free`.
+#[no_mangle]
+pub extern "C" fn nsv_decode_projected(
+    ptr: *const u8,
+    len: usize,
+    col_indices: *const usize,
+    num_cols: usize,
+) -> *mut ProjectedNsvHandle {
+    if ptr.is_null() || col_indices.is_null() || num_cols == 0 {
+        return std::ptr::null_mut();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let columns = unsafe { std::slice::from_raw_parts(col_indices, num_cols) };
+    let input = bytes.to_vec();
+
+    let proj = nsv::decode_lazy_projected(&input, columns);
+    // Extract owned data before moving input
+    let stride = proj.stride;
+    let num_rows = proj.num_rows;
+    let spans = proj.spans;
+
+    Box::into_raw(Box::new(ProjectedNsvHandle {
+        input,
+        stride,
+        num_rows,
+        spans,
+        scratch: Vec::new(),
+    }))
+}
+
+/// Number of rows in the projected data.
+#[no_mangle]
+pub extern "C" fn nsv_projected_row_count(handle: *const ProjectedNsvHandle) -> usize {
+    if handle.is_null() {
+        return 0;
+    }
+    unsafe { (*handle).num_rows }
+}
+
+/// Unescape and return the cell at `(row, proj_col)`.
+///
+/// `proj_col` is the index into the projected columns array (0-based),
+/// NOT the original column index.  The returned pointer is valid until
+/// the next `nsv_projected_cell` call on the same handle.
+#[no_mangle]
+pub extern "C" fn nsv_projected_cell(
+    handle: *mut ProjectedNsvHandle,
+    row: usize,
+    proj_col: usize,
+    out_len: *mut usize,
+) -> *const c_char {
+    if handle.is_null() {
+        return std::ptr::null();
+    }
+    let h = unsafe { &mut *handle };
+    if row >= h.num_rows || proj_col >= h.stride {
+        return std::ptr::null();
+    }
+
+    let span = &h.spans[row * h.stride + proj_col];
+
+    // Unescape into scratch buffer
+    h.scratch = nsv::unescape_bytes(&h.input[span.start..span.end]);
+    // Best-effort UTF-8 lossy conversion for DuckDB
+    let s = String::from_utf8_lossy(&h.scratch);
+    if let std::borrow::Cow::Owned(owned) = s {
+        h.scratch = owned.into_bytes();
+    }
+
+    if !out_len.is_null() {
+        unsafe { *out_len = h.scratch.len() };
+    }
+    h.scratch.as_ptr() as *const c_char
+}
+
+/// Free a projected handle returned by `nsv_decode_projected`.
+#[no_mangle]
+pub extern "C" fn nsv_projected_free(handle: *mut ProjectedNsvHandle) {
     if !handle.is_null() {
         unsafe { drop(Box::from_raw(handle)) };
     }
@@ -432,5 +559,109 @@ mod tests {
         assert!(nsv_lazy_cell(handle, 99, 0, &mut len).is_null());
 
         nsv_lazy_free(handle);
+    }
+
+    #[test]
+    fn test_lazy_input_ptr() {
+        let input = b"name\nage\n\nAlice\n30\n\n";
+        let handle = nsv_decode_lazy(input.as_ptr(), input.len());
+
+        let ptr = nsv_lazy_input_ptr(handle);
+        let len = nsv_lazy_input_len(handle);
+        assert!(!ptr.is_null());
+        assert_eq!(len, input.len());
+        let buf = unsafe { std::slice::from_raw_parts(ptr, len) };
+        assert_eq!(buf, &input[..]);
+
+        nsv_lazy_free(handle);
+    }
+
+    #[test]
+    fn test_projected_decode() {
+        let input = b"c0\nc1\nc2\nc3\n\na\nb\nc\nd\n\ne\nf\ng\nh\n\n";
+        // Project columns 0 and 2
+        let cols: [usize; 2] = [0, 2];
+        let handle = nsv_decode_projected(
+            input.as_ptr(),
+            input.len(),
+            cols.as_ptr(),
+            cols.len(),
+        );
+        assert!(!handle.is_null());
+
+        assert_eq!(nsv_projected_row_count(handle), 3);
+
+        let mut len = 0usize;
+        // Row 0: headers c0, c2
+        let cell = nsv_projected_cell(handle, 0, 0, &mut len);
+        let s = unsafe { std::slice::from_raw_parts(cell as *const u8, len) };
+        assert_eq!(s, b"c0");
+
+        let cell = nsv_projected_cell(handle, 0, 1, &mut len);
+        let s = unsafe { std::slice::from_raw_parts(cell as *const u8, len) };
+        assert_eq!(s, b"c2");
+
+        // Row 1: data a, c
+        let cell = nsv_projected_cell(handle, 1, 0, &mut len);
+        let s = unsafe { std::slice::from_raw_parts(cell as *const u8, len) };
+        assert_eq!(s, b"a");
+
+        let cell = nsv_projected_cell(handle, 1, 1, &mut len);
+        let s = unsafe { std::slice::from_raw_parts(cell as *const u8, len) };
+        assert_eq!(s, b"c");
+
+        // Row 2: data e, g
+        let cell = nsv_projected_cell(handle, 2, 0, &mut len);
+        let s = unsafe { std::slice::from_raw_parts(cell as *const u8, len) };
+        assert_eq!(s, b"e");
+
+        nsv_projected_free(handle);
+    }
+
+    #[test]
+    fn test_projected_matches_lazy() {
+        let input = b"a\n\\\nb\n\n\\\nc\n\\\n\nLine 1\\nLine 2\nBackslash: \\\\\n\n";
+
+        // Full lazy decode for reference
+        let lazy = nsv_decode_lazy(input.as_ptr(), input.len());
+        let nrows = nsv_lazy_row_count(lazy);
+
+        // Project all 3 columns — should match lazy exactly
+        let cols: [usize; 3] = [0, 1, 2];
+        let proj = nsv_decode_projected(
+            input.as_ptr(),
+            input.len(),
+            cols.as_ptr(),
+            cols.len(),
+        );
+
+        assert_eq!(nsv_projected_row_count(proj), nrows);
+
+        for row in 0..nrows {
+            for col in 0..nsv_lazy_col_count(lazy, row) {
+                let mut llen = 0usize;
+                let mut plen = 0usize;
+                let lcell = nsv_lazy_cell(lazy, row, col, &mut llen);
+                let pcell = nsv_projected_cell(proj, row, col, &mut plen);
+
+                assert_eq!(llen, plen, "row={} col={}", row, col);
+                if llen > 0 {
+                    let ls = unsafe { std::slice::from_raw_parts(lcell as *const u8, llen) };
+                    let ps = unsafe { std::slice::from_raw_parts(pcell as *const u8, plen) };
+                    assert_eq!(ls, ps, "row={} col={}", row, col);
+                }
+            }
+        }
+
+        nsv_lazy_free(lazy);
+        nsv_projected_free(proj);
+    }
+
+    #[test]
+    fn test_projected_null_safety() {
+        assert!(nsv_decode_projected(std::ptr::null(), 0, std::ptr::null(), 0).is_null());
+        assert_eq!(nsv_projected_row_count(std::ptr::null()), 0);
+        assert!(nsv_projected_cell(std::ptr::null_mut(), 0, 0, std::ptr::null_mut()).is_null());
+        nsv_projected_free(std::ptr::null_mut());
     }
 }

@@ -42,7 +42,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 [[package]]
 name = "nsv"
 version = "0.0.8"
-source = "git+https://github.com/nsv-format/nsv-rust.git?branch=claude%2Fupdate-nsv-duckdb-eNCLr#09754910686e2e9ca8d09390b2bda473df9fadbd"
+source = "git+https://github.com/nsv-format/nsv-rust.git?branch=claude%2Fupdate-nsv-duckdb-eNCLr#368af8eb50cbd51fca2e00b8b040d8ed9fc49986"
 dependencies = [
  "memchr",
  "rayon",

@@ -80,6 +80,14 @@ struct NSVScanState : public GlobalTableFunctionState {
   idx_t current_row = 0;
   //! Maps output column index → source column index (from projection pushdown).
   vector<column_t> column_ids;
+  //! Projected handle — flat storage, only spans for projected columns.
+  ProjectedNsvHandle *projected = nullptr;
+
+  ~NSVScanState() {
+    if (projected) {
+      nsv_projected_free(projected);
+    }
+  }
 };
 
 static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
@@ -143,9 +151,28 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
 }
 
 static unique_ptr<GlobalTableFunctionState>
-NSVInit(ClientContext &, TableFunctionInitInput &input) {
+NSVInit(ClientContext &ctx, TableFunctionInitInput &input) {
   auto state = make_uniq<NSVScanState>();
   state->column_ids = input.column_ids;
+
+  // Build a projected handle over the raw input using the column_ids
+  // from projection pushdown.  This re-scans the input but only records
+  // spans for the requested columns — flat storage, single allocation.
+  auto &bind = input.bind_data->Cast<NSVBindData>();
+  const uint8_t *raw_ptr = nsv_lazy_input_ptr(bind.handle);
+  size_t raw_len = nsv_lazy_input_len(bind.handle);
+
+  if (raw_ptr && raw_len > 0 && !state->column_ids.empty()) {
+    vector<size_t> col_indices;
+    col_indices.reserve(state->column_ids.size());
+    for (auto &cid : state->column_ids) {
+      col_indices.push_back(static_cast<size_t>(cid));
+    }
+    state->projected = nsv_decode_projected(raw_ptr, raw_len,
+                                            col_indices.data(),
+                                            col_indices.size());
+  }
+
   return std::move(state);
 }
 
@@ -159,7 +186,11 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     state.current_row = 1;
   }
 
-  idx_t total_rows = nsv_lazy_row_count(bind.handle);
+  // Use projected handle if available, otherwise fall back to lazy handle.
+  bool use_projected = (state.projected != nullptr);
+  idx_t total_rows = use_projected
+                         ? nsv_projected_row_count(state.projected)
+                         : nsv_lazy_row_count(bind.handle);
   idx_t count =
       MinValue<idx_t>(STANDARD_VECTOR_SIZE, total_rows - state.current_row);
   if (count == 0) {
@@ -167,10 +198,7 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     return;
   }
 
-  // With projection pushdown, output.ColumnCount() == column_ids.size().
-  // Only unescape cells for the projected columns — the core optimisation.
   for (idx_t out_col = 0; out_col < output.ColumnCount(); out_col++) {
-    // Map output column to source column index
     idx_t src_col = state.column_ids[out_col];
     auto &vec = output.data[out_col];
     const auto &target_type = bind.types[src_col];
@@ -178,21 +206,27 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     for (idx_t i = 0; i < count; i++) {
       idx_t row_idx = state.current_row + i;
 
-      // Handle ragged rows
-      if (src_col >= nsv_lazy_col_count(bind.handle, row_idx)) {
-        vec.SetValue(i, Value());
-        continue;
+      size_t cell_len = 0;
+      const char *cell;
+
+      if (use_projected) {
+        // proj_col = out_col (projected handle stores columns in output order)
+        cell = nsv_projected_cell(state.projected, row_idx, out_col, &cell_len);
+      } else {
+        // Fallback: direct lazy access by source column
+        if (src_col >= nsv_lazy_col_count(bind.handle, row_idx)) {
+          vec.SetValue(i, Value());
+          continue;
+        }
+        cell = nsv_lazy_cell(bind.handle, row_idx, src_col, &cell_len);
       }
 
-      size_t cell_len = 0;
-      const char *cell =
-          nsv_lazy_cell(bind.handle, row_idx, src_col, &cell_len);
       if (!cell || cell_len == 0) {
         vec.SetValue(i, Value());
         continue;
       }
 
-      // Immediately copy — pointer valid only until next nsv_lazy_cell call
+      // Immediately copy — pointer valid only until next cell call
       Value str_val(string(cell, cell_len));
       if (target_type == LogicalType::VARCHAR) {
         vec.SetValue(i, str_val);
