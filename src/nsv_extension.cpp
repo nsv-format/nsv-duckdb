@@ -157,11 +157,14 @@ NSVInit(ClientContext &ctx, TableFunctionInitInput &input) {
   auto state = make_uniq<NSVScanState>();
   state->column_ids = input.column_ids;
 
-  // Build a projected handle from the raw buffer using the column_ids
-  // from projection pushdown.  Single-pass decode of selected columns only.
+  // Only use projected decode when a strict subset of columns is requested.
+  // SELECT * populates column_ids with all columns, so re-decoding would
+  // just duplicate the eager handle from bind — skip it.
   auto &bind = input.bind_data->Cast<NSVBindData>();
+  idx_t ncols = bind.names.size();
 
-  if (!bind.raw_buffer.empty() && !state->column_ids.empty()) {
+  if (!bind.raw_buffer.empty() && !state->column_ids.empty() &&
+      state->column_ids.size() < ncols) {
     vector<size_t> col_indices;
     col_indices.reserve(state->column_ids.size());
     for (auto &cid : state->column_ids) {
