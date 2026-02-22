@@ -130,6 +130,13 @@ SELECT SUM(age) FROM read_nsv('__TEST_DIR__/types.nsv');
 ----
 55
 
+# Full permutation — all columns, different order (hits eager fallback path)
+query IRIT
+SELECT active, salary, age, name FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+true	50000.5	30	Alice
+false	75000.25	25	Bob
+
 # Count with projection
 query I
 SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/types.nsv') WHERE active = false;
