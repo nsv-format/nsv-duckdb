@@ -22,10 +22,10 @@ static const vector<LogicalType> TYPE_CANDIDATES = {
     LogicalType::VARCHAR // fallback — always succeeds
 };
 
-static LogicalType DetectColumnType(ClientContext &ctx, NsvHandle *data,
+static LogicalType DetectColumnType(ClientContext &ctx, LazyNsvHandle *data,
                                     idx_t col_idx, idx_t start_row,
                                     idx_t sample_size) {
-  idx_t nrows = nsv_row_count(data);
+  idx_t nrows = nsv_lazy_row_count(data);
   idx_t end_row = MinValue<idx_t>(nrows, start_row + sample_size);
 
   for (const auto &candidate : TYPE_CANDIDATES) {
@@ -38,7 +38,7 @@ static LogicalType DetectColumnType(ClientContext &ctx, NsvHandle *data,
 
     for (idx_t row = start_row; row < end_row && all_ok; row++) {
       size_t cell_len = 0;
-      const char *cell = nsv_cell(data, row, col_idx, &cell_len);
+      const char *cell = nsv_lazy_cell(data, row, col_idx, &cell_len);
       if (!cell || cell_len == 0) {
         continue; // NULL / empty → casts to anything
       }
@@ -66,18 +66,20 @@ struct NSVBindData : public TableFunctionData {
   string filename;
   vector<string> names;
   vector<LogicalType> types;
-  NsvHandle *handle = nullptr;
+  LazyNsvHandle *handle = nullptr;
   bool all_varchar = false;
 
   ~NSVBindData() {
     if (handle) {
-      nsv_free(handle);
+      nsv_lazy_free(handle);
     }
   }
 };
 
 struct NSVScanState : public GlobalTableFunctionState {
   idx_t current_row = 0;
+  //! Maps output column index → source column index (from projection pushdown).
+  vector<column_t> column_ids;
 };
 
 static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
@@ -102,24 +104,24 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
   buffer.resize(file_size);
   fs.Read(*file_handle, (void *)buffer.data(), file_size);
 
-  // Decode via Rust FFI
-  result->handle = nsv_decode(reinterpret_cast<const uint8_t *>(buffer.data()),
-                              buffer.size());
+  // Lazy decode via Rust FFI — builds structural index only (no unescaping)
+  result->handle = nsv_decode_lazy(
+      reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
   if (!result->handle) {
     throw InvalidInputException("Failed to parse NSV file: %s",
                                 result->filename);
   }
 
-  idx_t nrows = nsv_row_count(result->handle);
+  idx_t nrows = nsv_lazy_row_count(result->handle);
   if (nrows == 0) {
     throw InvalidInputException("Empty NSV file: %s", result->filename);
   }
 
   // Row 0 = column headers
-  idx_t ncols = nsv_col_count(result->handle, 0);
+  idx_t ncols = nsv_lazy_col_count(result->handle, 0);
   for (idx_t i = 0; i < ncols; i++) {
     size_t cell_len = 0;
-    const char *cell = nsv_cell(result->handle, 0, i, &cell_len);
+    const char *cell = nsv_lazy_cell(result->handle, 0, i, &cell_len);
     if (cell && cell_len > 0) {
       result->names.emplace_back(cell, cell_len);
     } else {
@@ -140,9 +142,11 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
   return std::move(result);
 }
 
-static unique_ptr<GlobalTableFunctionState> NSVInit(ClientContext &,
-                                                    TableFunctionInitInput &) {
-  return make_uniq<NSVScanState>();
+static unique_ptr<GlobalTableFunctionState>
+NSVInit(ClientContext &, TableFunctionInitInput &input) {
+  auto state = make_uniq<NSVScanState>();
+  state->column_ids = input.column_ids;
+  return std::move(state);
 }
 
 static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
@@ -155,7 +159,7 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     state.current_row = 1;
   }
 
-  idx_t total_rows = nsv_row_count(bind.handle);
+  idx_t total_rows = nsv_lazy_row_count(bind.handle);
   idx_t count =
       MinValue<idx_t>(STANDARD_VECTOR_SIZE, total_rows - state.current_row);
   if (count == 0) {
@@ -163,26 +167,32 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     return;
   }
 
-  for (idx_t col = 0; col < output.ColumnCount(); col++) {
-    auto &vec = output.data[col];
-    const auto &target_type = bind.types[col];
+  // With projection pushdown, output.ColumnCount() == column_ids.size().
+  // Only unescape cells for the projected columns — the core optimisation.
+  for (idx_t out_col = 0; out_col < output.ColumnCount(); out_col++) {
+    // Map output column to source column index
+    idx_t src_col = state.column_ids[out_col];
+    auto &vec = output.data[out_col];
+    const auto &target_type = bind.types[src_col];
 
     for (idx_t i = 0; i < count; i++) {
       idx_t row_idx = state.current_row + i;
 
       // Handle ragged rows
-      if (col >= nsv_col_count(bind.handle, row_idx)) {
+      if (src_col >= nsv_lazy_col_count(bind.handle, row_idx)) {
         vec.SetValue(i, Value());
         continue;
       }
 
       size_t cell_len = 0;
-      const char *cell = nsv_cell(bind.handle, row_idx, col, &cell_len);
+      const char *cell =
+          nsv_lazy_cell(bind.handle, row_idx, src_col, &cell_len);
       if (!cell || cell_len == 0) {
         vec.SetValue(i, Value());
         continue;
       }
 
+      // Immediately copy — pointer valid only until next nsv_lazy_cell call
       Value str_val(string(cell, cell_len));
       if (target_type == LogicalType::VARCHAR) {
         vec.SetValue(i, str_val);
@@ -328,10 +338,11 @@ static void NSVWriteFinalize(ClientContext &ctx, FunctionData &,
 // ── Extension registration ──────────────────────────────────────────
 
 static void LoadInternal(ExtensionLoader &loader) {
-  // read_nsv table function
+  // read_nsv table function with projection pushdown
   TableFunction read_nsv("read_nsv", {LogicalType::VARCHAR}, NSVScan, NSVBind);
   read_nsv.init_global = NSVInit;
   read_nsv.named_parameters["all_varchar"] = LogicalType::BOOLEAN;
+  read_nsv.projection_pushdown = true;
   loader.RegisterFunction(read_nsv);
 
   // COPY TO ... (FORMAT nsv)
