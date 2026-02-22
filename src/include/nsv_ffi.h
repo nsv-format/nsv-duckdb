@@ -9,9 +9,9 @@
 extern "C" {
 #endif
 
-/* ── Eager reading (full decode) ─────────────────────────────────── */
+/* ── Reading ─────────────────────────────────────────────────────── */
 
-/* Opaque handle to decoded NSV data (all cells eagerly unescaped). */
+/* Opaque handle to decoded NSV data. */
 typedef struct NsvHandle NsvHandle;
 
 /* Decode `len` bytes at `ptr` into an NSV handle.
