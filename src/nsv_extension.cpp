@@ -67,6 +67,8 @@ struct NSVBindData : public TableFunctionData {
   vector<string> names;
   vector<LogicalType> types;
   NsvHandle *handle = nullptr;
+  //! Raw file bytes kept for nsv_decode_projected at scan init.
+  string raw_buffer;
   bool all_varchar = false;
 
   ~NSVBindData() {
@@ -78,6 +80,16 @@ struct NSVBindData : public TableFunctionData {
 
 struct NSVScanState : public GlobalTableFunctionState {
   idx_t current_row = 0;
+  //! Maps output column index → source column index (from projection pushdown).
+  vector<column_t> column_ids;
+  //! Projected handle — pre-decoded, only requested columns.
+  ProjectedNsvHandle *projected = nullptr;
+
+  ~NSVScanState() {
+    if (projected) {
+      nsv_projected_free(projected);
+    }
+  }
 };
 
 static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
@@ -98,13 +110,13 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
   auto file_handle = fs.OpenFile(result->filename, FileFlags::FILE_FLAGS_READ);
   auto file_size = fs.GetFileSize(*file_handle);
 
-  string buffer;
-  buffer.resize(file_size);
-  fs.Read(*file_handle, (void *)buffer.data(), file_size);
+  result->raw_buffer.resize(file_size);
+  fs.Read(*file_handle, (void *)result->raw_buffer.data(), file_size);
 
-  // Decode via Rust FFI
-  result->handle = nsv_decode(reinterpret_cast<const uint8_t *>(buffer.data()),
-                              buffer.size());
+  // Eager decode via Rust FFI — headers + type sniffing
+  result->handle =
+      nsv_decode(reinterpret_cast<const uint8_t *>(result->raw_buffer.data()),
+                 result->raw_buffer.size());
   if (!result->handle) {
     throw InvalidInputException("Failed to parse NSV file: %s",
                                 result->filename);
@@ -140,9 +152,30 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
   return std::move(result);
 }
 
-static unique_ptr<GlobalTableFunctionState> NSVInit(ClientContext &,
-                                                    TableFunctionInitInput &) {
-  return make_uniq<NSVScanState>();
+static unique_ptr<GlobalTableFunctionState>
+NSVInit(ClientContext &ctx, TableFunctionInitInput &input) {
+  auto state = make_uniq<NSVScanState>();
+  state->column_ids = input.column_ids;
+
+  // Only use projected decode when a strict subset of columns is requested.
+  // SELECT * populates column_ids with all columns, so re-decoding would
+  // just duplicate the eager handle from bind — skip it.
+  auto &bind = input.bind_data->Cast<NSVBindData>();
+  idx_t ncols = bind.names.size();
+
+  if (!bind.raw_buffer.empty() && !state->column_ids.empty() &&
+      state->column_ids.size() < ncols) {
+    vector<size_t> col_indices;
+    col_indices.reserve(state->column_ids.size());
+    for (auto &cid : state->column_ids) {
+      col_indices.push_back(static_cast<size_t>(cid));
+    }
+    state->projected = nsv_decode_projected(
+        reinterpret_cast<const uint8_t *>(bind.raw_buffer.data()),
+        bind.raw_buffer.size(), col_indices.data(), col_indices.size());
+  }
+
+  return std::move(state);
 }
 
 static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
@@ -155,7 +188,10 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     state.current_row = 1;
   }
 
-  idx_t total_rows = nsv_row_count(bind.handle);
+  // Use projected handle if available, otherwise fall back to eager handle.
+  bool use_projected = (state.projected != nullptr);
+  idx_t total_rows = use_projected ? nsv_projected_row_count(state.projected)
+                                   : nsv_row_count(bind.handle);
   idx_t count =
       MinValue<idx_t>(STANDARD_VECTOR_SIZE, total_rows - state.current_row);
   if (count == 0) {
@@ -163,21 +199,29 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     return;
   }
 
-  for (idx_t col = 0; col < output.ColumnCount(); col++) {
-    auto &vec = output.data[col];
-    const auto &target_type = bind.types[col];
+  for (idx_t out_col = 0; out_col < output.ColumnCount(); out_col++) {
+    idx_t src_col = state.column_ids[out_col];
+    auto &vec = output.data[out_col];
+    const auto &target_type = bind.types[src_col];
 
     for (idx_t i = 0; i < count; i++) {
       idx_t row_idx = state.current_row + i;
 
-      // Handle ragged rows
-      if (col >= nsv_col_count(bind.handle, row_idx)) {
-        vec.SetValue(i, Value());
-        continue;
+      size_t cell_len = 0;
+      const char *cell;
+
+      if (use_projected) {
+        // proj_col = out_col (projected handle stores columns in output order)
+        cell = nsv_projected_cell(state.projected, row_idx, out_col, &cell_len);
+      } else {
+        // Fallback: direct access by source column
+        if (src_col >= nsv_col_count(bind.handle, row_idx)) {
+          vec.SetValue(i, Value());
+          continue;
+        }
+        cell = nsv_cell(bind.handle, row_idx, src_col, &cell_len);
       }
 
-      size_t cell_len = 0;
-      const char *cell = nsv_cell(bind.handle, row_idx, col, &cell_len);
       if (!cell || cell_len == 0) {
         vec.SetValue(i, Value());
         continue;
@@ -328,10 +372,11 @@ static void NSVWriteFinalize(ClientContext &ctx, FunctionData &,
 // ── Extension registration ──────────────────────────────────────────
 
 static void LoadInternal(ExtensionLoader &loader) {
-  // read_nsv table function
+  // read_nsv table function with projection pushdown
   TableFunction read_nsv("read_nsv", {LogicalType::VARCHAR}, NSVScan, NSVBind);
   read_nsv.init_global = NSVInit;
   read_nsv.named_parameters["all_varchar"] = LogicalType::BOOLEAN;
+  read_nsv.projection_pushdown = true;
   loader.RegisterFunction(read_nsv);
 
   // COPY TO ... (FORMAT nsv)

@@ -1,7 +1,8 @@
-//! FFI bridge between nsv 0.0.8 and the DuckDB C++ extension.
+//! FFI bridge between nsv and the DuckDB C++ extension.
 //!
-//! Design: opaque handle, accessor-based. No file I/O here —
-//! the caller (C++ side) reads the file and passes a byte buffer.
+//! Two handle types:
+//! - `NsvHandle` — full eager decode (bind-time headers + type sniffing).
+//! - `ProjectedNsvHandle` — single-pass decode of selected columns only (scan-time).
 //!
 //! Memory model:
 //! - `nsv_decode` returns an owned `*mut NsvHandle` that must be freed with `nsv_free`.
@@ -21,6 +22,20 @@ pub struct NsvHandle {
     data: Vec<Vec<String>>,
 }
 
+fn bytes_to_strings(rows: Vec<Vec<Vec<u8>>>) -> Vec<Vec<String>> {
+    rows.into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|cell| {
+                    // Best-effort UTF-8. DuckDB operates on strings, so lossy is
+                    // preferable to rejecting the whole file.
+                    String::from_utf8(cell).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+                })
+                .collect()
+        })
+        .collect()
+}
+
 /// Decode a byte buffer into an NSV handle.
 ///
 /// `ptr` must point to `len` readable bytes (not necessarily null-terminated).
@@ -31,19 +46,7 @@ pub extern "C" fn nsv_decode(ptr: *const u8, len: usize) -> *mut NsvHandle {
         return std::ptr::null_mut();
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let data = nsv::decode_bytes(bytes)
-        .into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|cell| {
-                    // Best-effort UTF-8. DuckDB operates on strings, so lossy is
-                    // preferable to rejecting the whole file.
-                    String::from_utf8(cell).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
-                })
-                .collect()
-        })
-        .collect();
-
+    let data = bytes_to_strings(nsv::decode_bytes(bytes));
     Box::into_raw(Box::new(NsvHandle { data }))
 }
 
@@ -101,6 +104,51 @@ pub extern "C" fn nsv_free(handle: *mut NsvHandle) {
     if !handle.is_null() {
         unsafe { drop(Box::from_raw(handle)) };
     }
+}
+
+// ── Projected decode (scan-time) ────────────────────────────────────
+
+pub struct ProjectedNsvHandle {
+    data: Vec<Vec<String>>,
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_decode_projected(
+    ptr: *const u8, len: usize, col_indices: *const usize, num_cols: usize,
+) -> *mut ProjectedNsvHandle {
+    if ptr.is_null() || col_indices.is_null() || num_cols == 0 {
+        return std::ptr::null_mut();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let columns = unsafe { std::slice::from_raw_parts(col_indices, num_cols) };
+    let data = bytes_to_strings(nsv::decode_bytes_projected(bytes, columns));
+    Box::into_raw(Box::new(ProjectedNsvHandle { data }))
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_projected_row_count(handle: *const ProjectedNsvHandle) -> usize {
+    if handle.is_null() { return 0; }
+    unsafe { &*handle }.data.len()
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_projected_cell(
+    handle: *const ProjectedNsvHandle, row: usize, proj_col: usize, out_len: *mut usize,
+) -> *const c_char {
+    if handle.is_null() { return std::ptr::null(); }
+    let h = unsafe { &*handle };
+    match h.data.get(row).and_then(|r| r.get(proj_col)) {
+        Some(cell) => {
+            if !out_len.is_null() { unsafe { *out_len = cell.len() }; }
+            cell.as_ptr() as *const c_char
+        }
+        None => std::ptr::null(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_projected_free(handle: *mut ProjectedNsvHandle) {
+    if !handle.is_null() { unsafe { drop(Box::from_raw(handle)) }; }
 }
 
 /// Encode a seqseq (built cell-by-cell from C) into an NSV byte buffer.
@@ -238,6 +286,49 @@ mod tests {
     }
 
     #[test]
+    fn test_projected_decode() {
+        let input = b"c0\nc1\nc2\nc3\n\na\nb\nc\nd\n\ne\nf\ng\nh\n\n";
+        let cols: [usize; 2] = [0, 2];
+        let handle = nsv_decode_projected(input.as_ptr(), input.len(), cols.as_ptr(), cols.len());
+        assert!(!handle.is_null());
+        assert_eq!(nsv_projected_row_count(handle), 3);
+        let mut len = 0usize;
+        let cell = nsv_projected_cell(handle, 1, 0, &mut len);
+        let s = unsafe { std::slice::from_raw_parts(cell as *const u8, len) };
+        assert_eq!(s, b"a");
+        let cell = nsv_projected_cell(handle, 1, 1, &mut len);
+        let s = unsafe { std::slice::from_raw_parts(cell as *const u8, len) };
+        assert_eq!(s, b"c");
+        nsv_projected_free(handle);
+    }
+
+    #[test]
+    fn test_projected_matches_full() {
+        let input = b"a\n\\\nb\n\n\\\nc\n\\\n\nLine 1\\nLine 2\nBackslash: \\\\\n\n";
+        let full = nsv_decode(input.as_ptr(), input.len());
+        let nrows = nsv_row_count(full);
+        let cols: [usize; 3] = [0, 1, 2];
+        let proj = nsv_decode_projected(input.as_ptr(), input.len(), cols.as_ptr(), cols.len());
+        assert_eq!(nsv_projected_row_count(proj), nrows);
+        for row in 0..nrows {
+            for col in 0..nsv_col_count(full, row) {
+                let mut flen = 0usize;
+                let mut plen = 0usize;
+                let fcell = nsv_cell(full, row, col, &mut flen);
+                let pcell = nsv_projected_cell(proj, row, col, &mut plen);
+                assert_eq!(flen, plen, "row={} col={}", row, col);
+                if flen > 0 {
+                    let fs = unsafe { std::slice::from_raw_parts(fcell as *const u8, flen) };
+                    let ps = unsafe { std::slice::from_raw_parts(pcell as *const u8, plen) };
+                    assert_eq!(fs, ps, "row={} col={}", row, col);
+                }
+            }
+        }
+        nsv_free(full);
+        nsv_projected_free(proj);
+    }
+
+    #[test]
     fn test_encode_roundtrip() {
         let enc = nsv_encoder_new();
 
@@ -267,5 +358,9 @@ mod tests {
         assert_eq!(nsv_col_count(std::ptr::null(), 0), 0);
         assert!(nsv_cell(std::ptr::null(), 0, 0, std::ptr::null_mut()).is_null());
         nsv_free(std::ptr::null_mut()); // should not crash
+        assert!(nsv_decode_projected(std::ptr::null(), 0, std::ptr::null(), 0).is_null());
+        assert_eq!(nsv_projected_row_count(std::ptr::null()), 0);
+        assert!(nsv_projected_cell(std::ptr::null(), 0, 0, std::ptr::null_mut()).is_null());
+        nsv_projected_free(std::ptr::null_mut());
     }
 }

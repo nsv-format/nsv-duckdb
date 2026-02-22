@@ -1,4 +1,4 @@
-/* nsv_ffi.h — C interface to the nsv Rust library (0.0.8+) */
+/* nsv_ffi.h — C interface to the nsv Rust library */
 #ifndef NSV_FFI_H
 #define NSV_FFI_H
 
@@ -34,6 +34,32 @@ const char *nsv_cell(const NsvHandle *h, size_t row, size_t col,
 
 /* Free a handle returned by nsv_decode(). */
 void nsv_free(NsvHandle *h);
+
+/* ── Projected reading (only requested columns) ──────────────────── */
+
+/* Opaque handle for projected NSV data.
+ * Cells are pre-decoded; pointers are stable until nsv_projected_free(). */
+typedef struct ProjectedNsvHandle ProjectedNsvHandle;
+
+/* Single-pass decode of selected columns only.
+ * col_indices is an array of num_cols 0-based column indices.
+ * Returns NULL on null input. Caller must free with nsv_projected_free(). */
+ProjectedNsvHandle *nsv_decode_projected(const uint8_t *ptr, size_t len,
+                                         const size_t *col_indices,
+                                         size_t num_cols);
+
+/* Number of rows in the projected data. */
+size_t nsv_projected_row_count(const ProjectedNsvHandle *h);
+
+/* Return pre-decoded cell at (row, proj_col).
+ * proj_col is the index into the projected columns array (0-based),
+ * NOT the original column index.
+ * Pointer is stable until nsv_projected_free(). */
+const char *nsv_projected_cell(const ProjectedNsvHandle *h, size_t row,
+                               size_t proj_col, size_t *out_len);
+
+/* Free a handle returned by nsv_decode_projected(). */
+void nsv_projected_free(ProjectedNsvHandle *h);
 
 /* ── Writing ─────────────────────────────────────────────────────── */
 

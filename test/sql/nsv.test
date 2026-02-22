@@ -93,3 +93,52 @@ query IIII
 SELECT typeof(name), typeof(age), typeof(salary), typeof(active) FROM read_nsv('__TEST_DIR__/roundtrip.nsv') LIMIT 1;
 ----
 VARCHAR	BIGINT	DOUBLE	BOOLEAN
+
+# ── read_nsv: column projection ───────────────────────────────────
+
+# Single column projection
+query T
+SELECT name FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+Alice
+Bob
+
+# Non-first column projection
+query R
+SELECT salary FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+50000.5
+75000.25
+
+# Two non-adjacent columns
+query TR
+SELECT name, salary FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+Alice	50000.5
+Bob	75000.25
+
+# Reversed column order
+query RT
+SELECT salary, name FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+50000.5	Alice
+75000.25	Bob
+
+# Aggregation on projected column
+query I
+SELECT SUM(age) FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+55
+
+# Full permutation — all columns, different order (hits eager fallback path)
+query IRIT
+SELECT active, salary, age, name FROM read_nsv('__TEST_DIR__/types.nsv');
+----
+true	50000.5	30	Alice
+false	75000.25	25	Bob
+
+# Count with projection
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/types.nsv') WHERE active = false;
+----
+1
