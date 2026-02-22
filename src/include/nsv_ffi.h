@@ -29,8 +29,7 @@ size_t nsv_col_count(const NsvHandle *h, size_t row);
  * Sets *out_len to the byte length (excluding any null terminator).
  * Returns NULL if out of bounds.
  * The pointer is valid until nsv_free(h). */
-const char *nsv_cell(const NsvHandle *h, size_t row, size_t col,
-                     size_t *out_len);
+const char *nsv_cell(const NsvHandle *h, size_t row, size_t col, size_t *out_len);
 
 /* Free a handle returned by nsv_decode(). */
 void nsv_free(NsvHandle *h);
@@ -58,8 +57,7 @@ size_t nsv_lazy_col_count(const LazyNsvHandle *h, size_t row);
  * IMPORTANT: the returned pointer is only valid until the next
  * nsv_lazy_cell() call on the SAME handle, or until nsv_lazy_free().
  * The caller must copy the data if it needs to persist. */
-const char *nsv_lazy_cell(LazyNsvHandle *h, size_t row, size_t col,
-                          size_t *out_len);
+const char *nsv_lazy_cell(LazyNsvHandle *h, size_t row, size_t col, size_t *out_len);
 
 /* Pointer to the raw input bytes owned by the lazy handle.
  * Valid until nsv_lazy_free(). */
@@ -71,30 +69,25 @@ size_t nsv_lazy_input_len(const LazyNsvHandle *h);
 /* Free a handle returned by nsv_decode_lazy(). */
 void nsv_lazy_free(LazyNsvHandle *h);
 
-/* ── Projected reading (flat storage, only requested columns) ──── */
+/* ── Projected reading (pre-decoded, only requested columns) ───── */
 
 /* Opaque handle for projected NSV data.
- * Only indexes the specified columns using flat storage (single
- * allocation instead of one Vec per row). */
+ * Cells are pre-decoded; pointers are stable until nsv_projected_free(). */
 typedef struct ProjectedNsvHandle ProjectedNsvHandle;
 
-/* Decode with column projection — only indexes the specified columns.
+/* Single-pass decode of selected columns only.
  * col_indices is an array of num_cols 0-based column indices.
  * Returns NULL on null input. Caller must free with nsv_projected_free(). */
-ProjectedNsvHandle *nsv_decode_projected(const uint8_t *ptr, size_t len,
-                                         const size_t *col_indices,
-                                         size_t num_cols);
+ProjectedNsvHandle *nsv_decode_projected(const uint8_t *ptr, size_t len, const size_t *col_indices, size_t num_cols);
 
 /* Number of rows in the projected data. */
 size_t nsv_projected_row_count(const ProjectedNsvHandle *h);
 
-/* Unescape and return the cell at (row, proj_col).
+/* Return pre-decoded cell at (row, proj_col).
  * proj_col is the index into the projected columns array (0-based),
  * NOT the original column index.
- * IMPORTANT: the returned pointer is only valid until the next
- * nsv_projected_cell() call on the SAME handle. */
-const char *nsv_projected_cell(ProjectedNsvHandle *h, size_t row,
-                               size_t proj_col, size_t *out_len);
+ * Pointer is stable until nsv_projected_free(). */
+const char *nsv_projected_cell(const ProjectedNsvHandle *h, size_t row, size_t proj_col, size_t *out_len);
 
 /* Free a handle returned by nsv_decode_projected(). */
 void nsv_projected_free(ProjectedNsvHandle *h);
