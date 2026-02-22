@@ -34,42 +34,7 @@ const char *nsv_cell(const NsvHandle *h, size_t row, size_t col, size_t *out_len
 /* Free a handle returned by nsv_decode(). */
 void nsv_free(NsvHandle *h);
 
-/* ── Lazy reading (column projection) ────────────────────────────── */
-
-/* Opaque handle to lazily-decoded NSV data.
- * Builds a structural index (row/cell byte ranges) without unescaping.
- * Cells are unescaped on demand via nsv_lazy_cell(). */
-typedef struct LazyNsvHandle LazyNsvHandle;
-
-/* Decode `len` bytes lazily — structural index only, no unescaping.
- * Returns NULL on null input. Caller must free with nsv_lazy_free(). */
-LazyNsvHandle *nsv_decode_lazy(const uint8_t *ptr, size_t len);
-
-/* Number of rows in the lazily-decoded data. */
-size_t nsv_lazy_row_count(const LazyNsvHandle *h);
-
-/* Number of cells in row `row`. */
-size_t nsv_lazy_col_count(const LazyNsvHandle *h, size_t row);
-
-/* Unescape and return the cell at (row, col).
- * Sets *out_len to the byte length.
- * Returns NULL if out of bounds.
- * IMPORTANT: the returned pointer is only valid until the next
- * nsv_lazy_cell() call on the SAME handle, or until nsv_lazy_free().
- * The caller must copy the data if it needs to persist. */
-const char *nsv_lazy_cell(LazyNsvHandle *h, size_t row, size_t col, size_t *out_len);
-
-/* Pointer to the raw input bytes owned by the lazy handle.
- * Valid until nsv_lazy_free(). */
-const uint8_t *nsv_lazy_input_ptr(const LazyNsvHandle *h);
-
-/* Length of the raw input bytes owned by the lazy handle. */
-size_t nsv_lazy_input_len(const LazyNsvHandle *h);
-
-/* Free a handle returned by nsv_decode_lazy(). */
-void nsv_lazy_free(LazyNsvHandle *h);
-
-/* ── Projected reading (pre-decoded, only requested columns) ───── */
+/* ── Projected reading (only requested columns) ──────────────────── */
 
 /* Opaque handle for projected NSV data.
  * Cells are pre-decoded; pointers are stable until nsv_projected_free(). */

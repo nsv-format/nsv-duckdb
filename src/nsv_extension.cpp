@@ -21,9 +21,9 @@ static const vector<LogicalType> TYPE_CANDIDATES = {
     LogicalType::VARCHAR // fallback — always succeeds
 };
 
-static LogicalType DetectColumnType(ClientContext &ctx, LazyNsvHandle *data, idx_t col_idx, idx_t start_row,
+static LogicalType DetectColumnType(ClientContext &ctx, NsvHandle *data, idx_t col_idx, idx_t start_row,
                                     idx_t sample_size) {
-	idx_t nrows = nsv_lazy_row_count(data);
+	idx_t nrows = nsv_row_count(data);
 	idx_t end_row = MinValue<idx_t>(nrows, start_row + sample_size);
 
 	for (const auto &candidate : TYPE_CANDIDATES) {
@@ -36,7 +36,7 @@ static LogicalType DetectColumnType(ClientContext &ctx, LazyNsvHandle *data, idx
 
 		for (idx_t row = start_row; row < end_row && all_ok; row++) {
 			size_t cell_len = 0;
-			const char *cell = nsv_lazy_cell(data, row, col_idx, &cell_len);
+			const char *cell = nsv_cell(data, row, col_idx, &cell_len);
 			if (!cell || cell_len == 0) {
 				continue; // NULL / empty → casts to anything
 			}
@@ -64,12 +64,14 @@ struct NSVBindData : public TableFunctionData {
 	string filename;
 	vector<string> names;
 	vector<LogicalType> types;
-	LazyNsvHandle *handle = nullptr;
+	NsvHandle *handle = nullptr;
+	//! Raw file bytes kept for nsv_decode_projected at scan init.
+	string raw_buffer;
 	bool all_varchar = false;
 
 	~NSVBindData() {
 		if (handle) {
-			nsv_lazy_free(handle);
+			nsv_free(handle);
 		}
 	}
 };
@@ -78,7 +80,7 @@ struct NSVScanState : public GlobalTableFunctionState {
 	idx_t current_row = 0;
 	//! Maps output column index → source column index (from projection pushdown).
 	vector<column_t> column_ids;
-	//! Projected handle — flat storage, only spans for projected columns.
+	//! Projected handle — pre-decoded, only requested columns.
 	ProjectedNsvHandle *projected = nullptr;
 
 	~NSVScanState() {
@@ -104,26 +106,26 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx, TableFunctionBindInp
 	auto file_handle = fs.OpenFile(result->filename, FileFlags::FILE_FLAGS_READ);
 	auto file_size = fs.GetFileSize(*file_handle);
 
-	string buffer;
-	buffer.resize(file_size);
-	fs.Read(*file_handle, (void *)buffer.data(), file_size);
+	result->raw_buffer.resize(file_size);
+	fs.Read(*file_handle, (void *)result->raw_buffer.data(), file_size);
 
-	// Lazy decode via Rust FFI — builds structural index only (no unescaping)
-	result->handle = nsv_decode_lazy(reinterpret_cast<const uint8_t *>(buffer.data()), buffer.size());
+	// Eager decode via Rust FFI — headers + type sniffing
+	result->handle =
+	    nsv_decode(reinterpret_cast<const uint8_t *>(result->raw_buffer.data()), result->raw_buffer.size());
 	if (!result->handle) {
 		throw InvalidInputException("Failed to parse NSV file: %s", result->filename);
 	}
 
-	idx_t nrows = nsv_lazy_row_count(result->handle);
+	idx_t nrows = nsv_row_count(result->handle);
 	if (nrows == 0) {
 		throw InvalidInputException("Empty NSV file: %s", result->filename);
 	}
 
 	// Row 0 = column headers
-	idx_t ncols = nsv_lazy_col_count(result->handle, 0);
+	idx_t ncols = nsv_col_count(result->handle, 0);
 	for (idx_t i = 0; i < ncols; i++) {
 		size_t cell_len = 0;
-		const char *cell = nsv_lazy_cell(result->handle, 0, i, &cell_len);
+		const char *cell = nsv_cell(result->handle, 0, i, &cell_len);
 		if (cell && cell_len > 0) {
 			result->names.emplace_back(cell, cell_len);
 		} else {
@@ -148,20 +150,18 @@ static unique_ptr<GlobalTableFunctionState> NSVInit(ClientContext &ctx, TableFun
 	auto state = make_uniq<NSVScanState>();
 	state->column_ids = input.column_ids;
 
-	// Build a projected handle over the raw input using the column_ids
-	// from projection pushdown.  This re-scans the input but only records
-	// spans for the requested columns — flat storage, single allocation.
+	// Build a projected handle from the raw buffer using the column_ids
+	// from projection pushdown.  Single-pass decode of selected columns only.
 	auto &bind = input.bind_data->Cast<NSVBindData>();
-	const uint8_t *raw_ptr = nsv_lazy_input_ptr(bind.handle);
-	size_t raw_len = nsv_lazy_input_len(bind.handle);
 
-	if (raw_ptr && raw_len > 0 && !state->column_ids.empty()) {
+	if (!bind.raw_buffer.empty() && !state->column_ids.empty()) {
 		vector<size_t> col_indices;
 		col_indices.reserve(state->column_ids.size());
 		for (auto &cid : state->column_ids) {
 			col_indices.push_back(static_cast<size_t>(cid));
 		}
-		state->projected = nsv_decode_projected(raw_ptr, raw_len, col_indices.data(), col_indices.size());
+		state->projected = nsv_decode_projected(reinterpret_cast<const uint8_t *>(bind.raw_buffer.data()),
+		                                        bind.raw_buffer.size(), col_indices.data(), col_indices.size());
 	}
 
 	return std::move(state);
@@ -176,9 +176,9 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input, DataChunk &ou
 		state.current_row = 1;
 	}
 
-	// Use projected handle if available, otherwise fall back to lazy handle.
+	// Use projected handle if available, otherwise fall back to eager handle.
 	bool use_projected = (state.projected != nullptr);
-	idx_t total_rows = use_projected ? nsv_projected_row_count(state.projected) : nsv_lazy_row_count(bind.handle);
+	idx_t total_rows = use_projected ? nsv_projected_row_count(state.projected) : nsv_row_count(bind.handle);
 	idx_t count = MinValue<idx_t>(STANDARD_VECTOR_SIZE, total_rows - state.current_row);
 	if (count == 0) {
 		output.SetCardinality(0);
@@ -200,12 +200,12 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input, DataChunk &ou
 				// proj_col = out_col (projected handle stores columns in output order)
 				cell = nsv_projected_cell(state.projected, row_idx, out_col, &cell_len);
 			} else {
-				// Fallback: direct lazy access by source column
-				if (src_col >= nsv_lazy_col_count(bind.handle, row_idx)) {
+				// Fallback: direct access by source column
+				if (src_col >= nsv_col_count(bind.handle, row_idx)) {
 					vec.SetValue(i, Value());
 					continue;
 				}
-				cell = nsv_lazy_cell(bind.handle, row_idx, src_col, &cell_len);
+				cell = nsv_cell(bind.handle, row_idx, src_col, &cell_len);
 			}
 
 			if (!cell || cell_len == 0) {
@@ -213,7 +213,6 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input, DataChunk &ou
 				continue;
 			}
 
-			// Immediately copy — pointer valid only until next cell call
 			Value str_val(string(cell, cell_len));
 			if (target_type == LogicalType::VARCHAR) {
 				vec.SetValue(i, str_val);
