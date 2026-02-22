@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-nsv = { git = "https://github.com/nsv-format/nsv-rust.git", branch = "claude/update-nsv-duckdb-eNCLr" }
+nsv = "0.0.9"
 
 [lib]
 crate-type = ["staticlib"]

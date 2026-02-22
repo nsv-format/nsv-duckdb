@@ -41,8 +41,9 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
 name = "nsv"
-version = "0.0.8"
-source = "git+https://github.com/nsv-format/nsv-rust.git?branch=claude%2Fupdate-nsv-duckdb-eNCLr#8408c51fbb3642c5a8fd3e02198f7349cb1e6f93"
+version = "0.0.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f19a5bbdca1ac496ba07eaf420054683511768050c10cc108f35cf3d5a2600c"
 dependencies = [
  "memchr",
  "rayon",
