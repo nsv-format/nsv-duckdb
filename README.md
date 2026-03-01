@@ -1,6 +1,6 @@
 # NSV DuckDB Extension
 
-A loadable [DuckDB](https://duckdb.org/) extension for reading [NSV (Newline-Separated Values)](https://github.com/nsv-format/nsv) files.
+A loadable [DuckDB](https://duckdb.org/) extension for reading and writing [NSV (Newline-Separated Values)](https://github.com/nsv-format/nsv) files.
 
 ## Quick Start
 
@@ -18,6 +18,9 @@ GROUP BY city;
 
 -- Force all columns to VARCHAR (disable type detection)
 SELECT * FROM read_nsv('examples/users.nsv', all_varchar=true);
+
+-- Write query results to an NSV file
+COPY (SELECT * FROM read_nsv('examples/users.nsv')) TO 'output.nsv' (FORMAT nsv);
 ```
 
 ## What is NSV?
@@ -48,9 +51,8 @@ SF
 
 This extension integrates the Rust [nsv](https://crates.io/crates/nsv) parser with DuckDB via FFI:
 
-- **Rust layer** (`rust-glue/`) - FFI wrapper around the vendored NSV parser
-- **C++ layer** (`src/`) - DuckDB table function that calls the Rust FFI
-- **Vendored parser** (`vendor/nsv-rust/`) - The upstream NSV Rust library
+- **Rust layer** (`rust-ffi/`) - FFI wrapper around the [nsv](https://crates.io/crates/nsv) crate
+- **C++ layer** (`src/`) - DuckDB table function and COPY handler that call the Rust FFI
 
 ## Building from Source
 
@@ -95,11 +97,6 @@ make
 
 **macOS:**
 ```bash
-# If pre-built Linux libraries exist, remove them first
-rm -f rust-glue/target/release/libnsv_ffi.a
-rm -f rust-glue/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
-
-# Build (will compile Rust for your platform)
 make
 ```
 
@@ -160,6 +157,9 @@ JOIN read_nsv('orders.nsv') o ON u.id = o.user_id;
 
 -- Disable type detection (all columns as VARCHAR)
 SELECT * FROM read_nsv('data.nsv', all_varchar=true);
+
+-- Write to NSV
+COPY my_table TO 'output.nsv' (FORMAT nsv);
 ```
 
 ### Type Detection
@@ -198,27 +198,12 @@ LOAD '/Users/yourname/nsv-duckdb/build/release/extension/nsv/nsv.duckdb_extensio
 **Error:**
 ```
 Invalid Input Error: Failed to load '...', The file was built specifically
-for DuckDB version '...' (this version of DuckDB is 'v1.4.1')
+for DuckDB version '...' (this version of DuckDB is 'v1.4.2')
 ```
 
-**Solution:** The DuckDB submodule may be out of sync. Update it to v1.4.1:
+**Solution:** The DuckDB submodule may be out of sync. Update it:
 ```bash
 git submodule update --init --recursive
-make clean
-make
-```
-
-### macOS/ARM64: "ld: archive member '/' not a mach-o file"
-
-**Error:**
-```
-ld: archive member '/' not a mach-o file in '.../libnsv_ffi.a'
-```
-
-**Solution:** Pre-built Linux libraries are incompatible with macOS. Remove them and rebuild:
-```bash
-rm -f rust-glue/target/release/libnsv_ffi.a
-rm -f rust-glue/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
 make clean
 make
 ```
@@ -239,13 +224,11 @@ Tests are defined in `test/sql/nsv.test` using DuckDB's SQL test format.
 ```
 nsv-duckdb/
 ├── src/                          # C++ extension code
-│   ├── nsv_extension.cpp        # Main table function
-│   └── include/                 # Headers
-├── rust-glue/                   # Rust FFI wrapper
-│   ├── src/lib.rs              # FFI interface
-│   ├── nsv.h                   # C header for FFI
-│   └── Cargo.toml              # Links to vendor/nsv-rust
-├── vendor/nsv-rust/            # Vendored NSV parser (git submodule)
+│   ├── nsv_extension.cpp        # Table function + COPY handler
+│   └── include/                 # Headers (nsv_ffi.h, nsv_extension.hpp)
+├── rust-ffi/                    # Rust FFI wrapper
+│   ├── src/lib.rs              # FFI interface (decode, encode, projected decode)
+│   └── Cargo.toml              # Depends on nsv crate from crates.io
 ├── test/sql/                   # DuckDB SQL tests
 ├── examples/                   # Example NSV files
 ├── duckdb/                     # DuckDB submodule
@@ -256,14 +239,14 @@ nsv-duckdb/
 ### How the Build Works
 
 1. **Rust FFI library** is built first:
-   - `rust-glue/` compiles to a static library (`libnsv_ffi.a`)
-   - Uses the vendored NSV parser from `vendor/nsv-rust/`
-   - Exports C-compatible functions for parsing NSV
+   - `rust-ffi/` compiles to a static library (`libnsv_ffi.a` / `nsv_ffi.lib`)
+   - Depends on the [nsv](https://crates.io/crates/nsv) crate
+   - Exports C-compatible functions for parsing and encoding NSV
 
 2. **C++ extension** is built second:
    - Links against the Rust static library
-   - Implements DuckDB's table function API
-   - Calls Rust parser via FFI for actual NSV parsing
+   - Implements DuckDB's table function and COPY function APIs
+   - Calls Rust FFI for parsing and encoding
 
 3. **DuckDB extension system** packages everything:
    - Creates a loadable `.duckdb_extension` file
@@ -277,10 +260,7 @@ See `.github/workflows/MainDistributionPipeline.yml` for the CI configuration.
 
 ## License
 
-This extension follows the licensing of its components:
-- NSV parser: MIT (see `vendor/nsv-rust/`)
-- DuckDB: MIT
-- This extension code: MIT
+MIT. See [LICENSE](LICENSE).
 
 ## Project Status
 
@@ -288,18 +268,19 @@ This extension follows the licensing of its components:
 |---------|--------|
 | **Core** | |
 | `read_nsv()` table function | ✅ Working |
+| `COPY TO` (FORMAT nsv) | ✅ Working |
 | NSV parsing (escaping, empty cells, ragged rows) | ✅ Working |
 | Type narrowing (BOOLEAN, BIGINT, DOUBLE, DATE, TIMESTAMP) | ✅ Working |
 | `all_varchar` option | ✅ Working |
+| Projection pushdown | ✅ Working |
 | **Build & Distribution** | |
 | Build from source (Linux, macOS, Windows) | ✅ Working |
-| GitHub Actions CI | ✅ Working |
+| GitHub Actions CI (DuckDB v1.4.2) | ✅ Working |
 | GitHub Releases (on tag) | ✅ Configured |
 | DuckDB Community Extensions | ❌ Not submitted |
 | **Not Implemented** | |
-| `write_nsv()` / `COPY TO NSV` | ❌ |
 | File globbing (`*.nsv`) | ❌ |
-| Streaming large files | ❌ |
+| Streaming / chunked reads for large files | ❌ |
 | ENSV metadata support | ❌ |
 
 ## Links
