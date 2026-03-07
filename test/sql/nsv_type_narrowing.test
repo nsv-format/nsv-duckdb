@@ -246,22 +246,39 @@ SELECT typeof(val) FROM read_nsv('__TEST_DIR__/mixed_int_str.nsv') LIMIT 1;
 ----
 VARCHAR
 
-# All empty cells → VARCHAR (no non-empty values to narrow from)
+# All empty/NULL cells → VARCHAR (no non-empty values to narrow from)
 statement ok
-COPY (SELECT * FROM (VALUES ('val'),(''),(''),(''),(''),(''))) TO '__TEST_DIR__/all_empty.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+CREATE TABLE all_empty_src(val VARCHAR);
+
+statement ok
+INSERT INTO all_empty_src VALUES (NULL), (NULL), (NULL);
+
+statement ok
+COPY all_empty_src TO '__TEST_DIR__/all_empty.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE all_empty_src;
 
 query I
 SELECT typeof(val) FROM read_nsv('__TEST_DIR__/all_empty.nsv') LIMIT 1;
 ----
 VARCHAR
 
-# Single non-empty cell among empty cells → narrows to that cell's type
+# Single non-empty cell among NULLs → narrows to that cell's type
+# Use COPY TO nsv to create precise data (CSV trick is ambiguous for single-column NULLs)
 statement ok
-COPY (SELECT * FROM (VALUES ('val'),(''),(''),(''),('42'),(''),(''),(''))) TO '__TEST_DIR__/single_value.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+CREATE TABLE single_val_src(val VARCHAR);
 
-# The single non-empty value "42" casts to BOOLEAN (since "42" doesn't cast to BOOLEAN,
-# but does cast to BIGINT). Wait — BOOLEAN is tried first. "42" doesn't cast to BOOLEAN.
-# So BIGINT should be selected.
+statement ok
+INSERT INTO single_val_src VALUES (NULL), ('42'), (NULL);
+
+statement ok
+COPY single_val_src TO '__TEST_DIR__/single_value.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE single_val_src;
+
+# "42" doesn't cast to BOOLEAN, but does cast to BIGINT
 query I
 SELECT typeof(val) FROM read_nsv('__TEST_DIR__/single_value.nsv') LIMIT 1;
 ----
@@ -277,10 +294,20 @@ NULL
 # ── NULL/empty handling ────────────────────────────────────────────
 
 # Empty cells in NSV become NULL in output
+# Use COPY TO nsv for precise NULL handling (CSV trick creates extra empty records)
 statement ok
-COPY (SELECT * FROM (VALUES ('name'),('age'),(''),('Alice'),('30'),(''),(''),(''),(''),('Bob'),('25'),(''))) TO '__TEST_DIR__/with_nulls.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+CREATE TABLE with_nulls_src(name VARCHAR, age BIGINT);
 
-# Row with empty cells should have NULLs
+statement ok
+INSERT INTO with_nulls_src VALUES ('Alice', 30), (NULL, NULL), ('Bob', 25);
+
+statement ok
+COPY with_nulls_src TO '__TEST_DIR__/with_nulls.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE with_nulls_src;
+
+# Row with NULL cells should have NULLs
 query TI
 SELECT name, age FROM read_nsv('__TEST_DIR__/with_nulls.nsv');
 ----
