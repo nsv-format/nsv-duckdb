@@ -1,105 +1,286 @@
 # NSV DuckDB Extension
 
-A loadable [DuckDB](https://duckdb.org/) extension for reading and writing [NSV (Newline-Separated Values)](https://github.com/nsv-format/nsv) files. Uses Rust FFI for core parsing (from the [`nsv`](https://crates.io/crates/nsv) crate v0.0.9). Built against DuckDB v1.4.2.
+A loadable [DuckDB](https://duckdb.org/) extension for reading and writing [NSV (Newline-Separated Values)](https://github.com/nsv-format/nsv) files.
 
 ## Quick Start
 
 ```sql
+-- Load the extension (use absolute path on macOS)
 LOAD './build/release/extension/nsv/nsv.duckdb_extension';
 
--- Read with auto-detected types
+-- Read an NSV file (types are auto-detected)
 SELECT * FROM read_nsv('examples/users.nsv');
 
--- Aggregations work directly (no CAST needed)
-SELECT city, AVG(age) FROM read_nsv('examples/users.nsv') GROUP BY city;
+-- Types are automatically narrowed - no CAST needed for numeric operations
+SELECT city, AVG(age) as avg_age
+FROM read_nsv('examples/users.nsv')
+GROUP BY city;
 
--- Force all columns to VARCHAR
+-- Force all columns to VARCHAR (disable type detection)
 SELECT * FROM read_nsv('examples/users.nsv', all_varchar=true);
-
--- Write NSV
-COPY my_table TO 'output.nsv' (FORMAT nsv);
 ```
 
-## Type Detection
+## What is NSV?
 
-Columns are auto-narrowed by sampling up to 1000 data rows. Candidate types are tried in order:
+NSV (Newline-Separated Values) is a simple tabular data format where:
+- Each field value is on its own line
+- Records are separated by blank lines
+- The first record defines column names
 
-| Priority | Type | Examples |
-|----------|------|----------|
-| 1 | `BOOLEAN` | `true`, `false`, `TRUE`, `FALSE` (not `1`/`0`) |
-| 2 | `BIGINT` | `42`, `-100`, `3000000000` |
-| 3 | `DOUBLE` | `3.14`, `1.5e10`, `-0.5` |
-| 4 | `DATE` | `2026-01-15` (ISO 8601 only) |
-| 5 | `TIMESTAMP` | `2026-01-15 10:30:00`, `2026-01-15T10:30:00` |
-| 6 | `VARCHAR` | Everything else (fallback) |
+Example (`examples/users.nsv`):
+```
+name
+age
+city
 
-**Known behaviors:**
-- `1`/`0` columns narrow to BIGINT (strict cast rejects them as BOOLEAN)
-- Leading zeros (`007`) stay VARCHAR (strict cast rejects them for numeric types)
-- Empty cells are treated as NULL and don't influence type detection
-- NULL and empty strings are indistinguishable after roundtrip (both become empty cells in NSV)
-- Values beyond the 1000-row sample that fail to cast silently become NULL
+Alice
+30
+NYC
 
-## Building
-
-**Prerequisites:** CMake 3.5+, C++ compiler, [Rust toolchain](https://rustup.rs/)
-
-```bash
-git clone --recursive https://github.com/nsv-format/nsv-duckdb.git
-cd nsv-duckdb
-make
-# Output: build/release/extension/nsv/nsv.duckdb_extension
+Bob
+25
+SF
 ```
 
-First build compiles DuckDB from source (~20-30 min). On musl/Alpine, add `rustup target add x86_64-unknown-linux-musl` first. macOS requires absolute paths when loading (`duckdb -unsigned`).
-
-## Running Tests
-
-```bash
-make test
-```
-
-Tests are in `test/sql/nsv.test` and `test/sql/nsv_type_narrowing.test`.
+**Escaping:** `\` = empty string, `\n` = newline, `\\` = backslash
 
 ## Architecture
 
-```
-nsv-duckdb/
-├── src/nsv_extension.cpp    # DuckDB table function + COPY TO
-├── rust-ffi/src/lib.rs      # Rust FFI bridge (NsvHandle, NsvEncoder)
-├── test/sql/                # DuckDB SQL tests
-├── duckdb/                  # DuckDB submodule
-└── extension-ci-tools/      # DuckDB CI tools submodule
+This extension integrates the Rust [nsv](https://crates.io/crates/nsv) parser with DuckDB via FFI:
+
+- **Rust layer** (`rust-glue/`) - FFI wrapper around the vendored NSV parser
+- **C++ layer** (`src/`) - DuckDB table function that calls the Rust FFI
+- **Vendored parser** (`vendor/nsv-rust/`) - The upstream NSV Rust library
+
+## Building from Source
+
+### Prerequisites
+
+- **CMake** 3.5 or later
+- **C++ compiler** (GCC, Clang, or MSVC)
+- **Rust toolchain** - Install from [rustup.rs](https://rustup.rs/)
+  - On Alpine/musl systems: `rustup target add x86_64-unknown-linux-musl`
+
+### Build Steps
+
+```bash
+# Clone with submodules (includes DuckDB and CI tools)
+git clone --recursive https://github.com/nsv-format/nsv-duckdb.git
+cd nsv-duckdb
+
+# Build the extension
+make
+
+# The loadable extension will be at:
+# build/release/extension/nsv/nsv.duckdb_extension
 ```
 
-Three layers: **Rust FFI** (eager decode via `nsv::decode_bytes()`) → **C++ extension** (`read_nsv()` table function with projection pushdown, `COPY TO` writer) → **DuckDB** (loaded as extension).
+**Note:** The first build compiles DuckDB from source and can take 20-30 minutes.
+
+### Platform-Specific Notes
+
+**Linux (glibc):**
+```bash
+make
+```
+
+**Linux (musl/Alpine):**
+```bash
+# Install musl target for Rust
+rustup target add x86_64-unknown-linux-musl
+
+# Build (CMake auto-detects musl)
+make
+```
+
+**macOS:**
+```bash
+# If pre-built Linux libraries exist, remove them first
+rm -f rust-glue/target/release/libnsv_ffi.a
+rm -f rust-glue/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
+
+# Build (will compile Rust for your platform)
+make
+```
+
+**Note:** macOS requires absolute paths when loading extensions due to hardened runtime. See "Using the Extension" below.
+
+**Windows:**
+```bash
+# Use Visual Studio Developer Command Prompt
+cmake -DCMAKE_BUILD_TYPE=Release -S . -B build
+cmake --build build --config Release
+```
+
+## Using the Extension
+
+### Load the Extension
+
+**Linux:**
+```bash
+duckdb -unsigned
+```
+```sql
+D LOAD './build/release/extension/nsv/nsv.duckdb_extension';
+```
+
+**macOS:**
+```bash
+duckdb -unsigned
+```
+```sql
+-- macOS requires absolute paths due to hardened runtime
+D LOAD '/absolute/path/to/nsv-duckdb/build/release/extension/nsv/nsv.duckdb_extension';
+```
+
+**Tip:** Use `$(pwd)` to get the absolute path:
+```bash
+duckdb -unsigned << EOF
+LOAD '$(pwd)/build/release/extension/nsv/nsv.duckdb_extension';
+SELECT * FROM read_nsv('examples/users.nsv');
+EOF
+```
+
+### Read NSV Files
+
+```sql
+-- Basic read (types auto-detected)
+SELECT * FROM read_nsv('data.nsv');
+
+-- With filters (no CAST needed - types are auto-detected)
+SELECT * FROM read_nsv('users.nsv') WHERE age > 25;
+
+-- Aggregations work directly on numeric columns
+SELECT city, COUNT(*), AVG(salary) FROM read_nsv('users.nsv') GROUP BY city;
+
+-- Joins
+SELECT u.name, o.order_id
+FROM read_nsv('users.nsv') u
+JOIN read_nsv('orders.nsv') o ON u.id = o.user_id;
+
+-- Disable type detection (all columns as VARCHAR)
+SELECT * FROM read_nsv('data.nsv', all_varchar=true);
+```
+
+### Type Detection
+
+The extension automatically detects and narrows column types by sampling data:
+
+| Detected Type | Example Values |
+|---------------|----------------|
+| `BOOLEAN` | `true`, `false`, `TRUE`, `FALSE` |
+| `BIGINT` | `42`, `-100`, `9999999` |
+| `DOUBLE` | `3.14`, `-0.5`, `1.0e10` |
+| `DATE` | `2024-01-15` |
+| `TIMESTAMP` | `2024-01-15 10:30:00` |
+| `VARCHAR` | Everything else (fallback) |
+
+Use `all_varchar=true` to disable type detection and keep all columns as strings.
+
+## Troubleshooting
+
+### macOS: "relative path not allowed in hardened program"
+
+**Error:**
+```
+IO Error: Extension "./build/..." could not be loaded:
+dlopen(...) (relative path not allowed in hardened program)
+```
+
+**Solution:** Use an absolute path instead of a relative path:
+```sql
+-- Replace this with your actual path
+LOAD '/Users/yourname/nsv-duckdb/build/release/extension/nsv/nsv.duckdb_extension';
+```
+
+### "The file was built for DuckDB version X and can only be loaded with that version"
+
+**Error:**
+```
+Invalid Input Error: Failed to load '...', The file was built specifically
+for DuckDB version '...' (this version of DuckDB is 'v1.4.1')
+```
+
+**Solution:** The DuckDB submodule may be out of sync. Update it to v1.4.1:
+```bash
+git submodule update --init --recursive
+make clean
+make
+```
+
+### macOS/ARM64: "ld: archive member '/' not a mach-o file"
+
+**Error:**
+```
+ld: archive member '/' not a mach-o file in '.../libnsv_ffi.a'
+```
+
+**Solution:** Pre-built Linux libraries are incompatible with macOS. Remove them and rebuild:
+```bash
+rm -f rust-glue/target/release/libnsv_ffi.a
+rm -f rust-glue/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
+make clean
+make
+```
+
+## Development
+
+### Running Tests
+
+```bash
+# Run the test suite
+make test
+```
+
+Tests are defined in `test/sql/nsv.test` using DuckDB's SQL test format.
+
+### Project Structure
+
+```
+nsv-duckdb/
+├── src/                          # C++ extension code
+│   ├── nsv_extension.cpp        # Main table function
+│   └── include/                 # Headers
+├── rust-glue/                   # Rust FFI wrapper
+│   ├── src/lib.rs              # FFI interface
+│   ├── nsv.h                   # C header for FFI
+│   └── Cargo.toml              # Links to vendor/nsv-rust
+├── vendor/nsv-rust/            # Vendored NSV parser (git submodule)
+├── test/sql/                   # DuckDB SQL tests
+├── examples/                   # Example NSV files
+├── duckdb/                     # DuckDB submodule
+├── extension-ci-tools/         # DuckDB CI tools submodule
+└── CMakeLists.txt              # Build configuration
+```
+
+### How the Build Works
+
+1. **Rust FFI library** is built first:
+   - `rust-glue/` compiles to a static library (`libnsv_ffi.a`)
+   - Uses the vendored NSV parser from `vendor/nsv-rust/`
+   - Exports C-compatible functions for parsing NSV
+
+2. **C++ extension** is built second:
+   - Links against the Rust static library
+   - Implements DuckDB's table function API
+   - Calls Rust parser via FFI for actual NSV parsing
+
+3. **DuckDB extension system** packages everything:
+   - Creates a loadable `.duckdb_extension` file
+   - Includes all dependencies (Rust library is statically linked)
 
 ## CI/CD
 
-Uses DuckDB's [extension-ci-tools](https://github.com/duckdb/extension-ci-tools) for multi-platform builds. See `.github/workflows/MainDistributionPipeline.yml`.
+The extension uses DuckDB's [extension-ci-tools](https://github.com/duckdb/extension-ci-tools) for automated building and testing across platforms.
 
-**Build platforms:** linux_amd64, linux_arm64, linux_amd64_musl, osx_amd64, osx_arm64, windows_amd64, windows_arm64, windows_amd64_mingw, wasm_mvp, wasm_eh, wasm_threads
-
-**Release:** Triggers on `v*` tags. Downloads build artifacts, renames to `nsv-<platform>.<ext>`, and creates a GitHub release. Pre-release detected from `-rc`/`-beta`/`-alpha` in tag.
-
-## Status
-
-- [x] Core NSV parsing via Rust FFI
-- [x] `read_nsv()` table function
-- [x] Column projection pushdown
-- [x] CSV-style type narrowing
-- [x] `COPY TO` (write) support
-- [x] Build CI (multi-platform)
-- [x] `all_varchar` parameter
-- [x] Type narrowing edge cases tested
-- [ ] Release CI verified (no tags pushed yet)
-- [ ] NULL vs empty string disambiguation
-- [ ] Community extension submission
-- [ ] ENSV schema support (pending spec)
+See `.github/workflows/MainDistributionPipeline.yml` for the CI configuration.
 
 ## License
 
-MIT — see component licenses in `rust-ffi/` (nsv crate) and `duckdb/`.
+This extension follows the licensing of its components:
+- NSV parser: MIT (see `vendor/nsv-rust/`)
+- DuckDB: MIT
+- This extension code: MIT
 
 ## Links
 
