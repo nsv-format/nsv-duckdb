@@ -35,7 +35,7 @@ Columns are auto-narrowed by sampling up to 1000 data rows. Candidate types are 
 
 **Known behaviors:**
 - `1`/`0` columns narrow to BIGINT (strict cast rejects them as BOOLEAN)
-- Leading zeros (`007`) narrow to BIGINT — the zeros are lost. Use `all_varchar=true` to preserve
+- Leading zeros (`007`) stay VARCHAR (strict cast rejects them for numeric types)
 - Empty cells are treated as NULL and don't influence type detection
 - NULL and empty strings are indistinguishable after roundtrip (both become empty cells in NSV)
 - Values beyond the 1000-row sample that fail to cast silently become NULL
