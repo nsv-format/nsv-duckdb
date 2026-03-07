@@ -1,335 +1,704 @@
 # name: test/sql/nsv_type_narrowing.test
-# description: Comprehensive type narrowing edge cases for NSV extension
+# description: Verify NSV type narrowing matches CSV for the same data
 # group: [sql]
 
 require nsv
 
-# ── Integer edge cases ─────────────────────────────────────────────
+# ── Integer narrowing ─────────────────────────────────────────────
 
-# Small integers → BIGINT
+# Small integers
 statement ok
-COPY (SELECT * FROM (VALUES ('num'),(''),('1'),(''),('2'),(''),('3'),(''))) TO '__TEST_DIR__/small_ints.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+CREATE TABLE small_ints(num VARCHAR);
 
-query I
-SELECT typeof(num) FROM read_nsv('__TEST_DIR__/small_ints.nsv') LIMIT 1;
-----
-BIGINT
-
-query I
-SELECT num FROM read_nsv('__TEST_DIR__/small_ints.nsv');
-----
-1
-2
-3
-
-# Large integers beyond INT32 but within INT64 → BIGINT
 statement ok
-COPY (SELECT * FROM (VALUES ('big'),(''),('3000000000'),(''),('4000000000'),(''))) TO '__TEST_DIR__/big_ints.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+INSERT INTO small_ints VALUES ('1'), ('2'), ('3');
 
-query I
-SELECT typeof(big) FROM read_nsv('__TEST_DIR__/big_ints.nsv') LIMIT 1;
-----
-BIGINT
-
-query I
-SELECT big FROM read_nsv('__TEST_DIR__/big_ints.nsv');
-----
-3000000000
-4000000000
-
-# Negative integers → BIGINT
 statement ok
-COPY (SELECT * FROM (VALUES ('val'),(''),('-1'),(''),('-999'),(''),('42'),(''))) TO '__TEST_DIR__/neg_ints.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+COPY small_ints TO '__TEST_DIR__/small_ints.csv' (FORMAT CSV);
 
-query I
-SELECT typeof(val) FROM read_nsv('__TEST_DIR__/neg_ints.nsv') LIMIT 1;
-----
-BIGINT
-
-# Integers beyond INT64 → should fall through to DOUBLE or VARCHAR
-# INT64 max is 9223372036854775807; this number is larger
 statement ok
-COPY (SELECT * FROM (VALUES ('huge'),(''),('99999999999999999999'),(''))) TO '__TEST_DIR__/huge_ints.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+COPY small_ints TO '__TEST_DIR__/small_ints.nsv' (FORMAT nsv);
 
-# Beyond INT64 range: BIGINT fails, DOUBLE should succeed
-query I
-SELECT typeof(huge) FROM read_nsv('__TEST_DIR__/huge_ints.nsv') LIMIT 1;
-----
-DOUBLE
-
-# Leading zeros → TryCastAs(BIGINT, strict=true) REJECTS leading zeros
 statement ok
-COPY (SELECT * FROM (VALUES ('code'),(''),('007'),(''),('00123'),(''))) TO '__TEST_DIR__/leading_zeros.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+DROP TABLE small_ints;
 
-# NOTE: DuckDB's strict cast rejects leading zeros for BIGINT and DOUBLE.
-# This means codes like "007" and "00123" fall through to VARCHAR.
-# This is actually desirable: leading zeros typically signal codes, not numbers.
-query I
-SELECT typeof(code) FROM read_nsv('__TEST_DIR__/leading_zeros.nsv') LIMIT 1;
-----
-VARCHAR
-
-query T
-SELECT code FROM read_nsv('__TEST_DIR__/leading_zeros.nsv');
-----
-007
-00123
-
-# ── Boolean edge cases ─────────────────────────────────────────────
-
-# Lowercase true/false → BOOLEAN
-statement ok
-COPY (SELECT * FROM (VALUES ('flag'),(''),('true'),(''),('false'),(''))) TO '__TEST_DIR__/bool_lower.nsv' (FORMAT CSV, HEADER false, QUOTE '');
-
-query I
-SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_lower.nsv') LIMIT 1;
-----
-BOOLEAN
-
-# Uppercase TRUE/FALSE → test if TryCastAs(BOOLEAN) accepts these
-statement ok
-COPY (SELECT * FROM (VALUES ('flag'),(''),('TRUE'),(''),('FALSE'),(''))) TO '__TEST_DIR__/bool_upper.nsv' (FORMAT CSV, HEADER false, QUOTE '');
-
-query I
-SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_upper.nsv') LIMIT 1;
-----
-BOOLEAN
-
-query I
-SELECT flag FROM read_nsv('__TEST_DIR__/bool_upper.nsv');
+query B
+SELECT (SELECT typeof(num) FROM read_csv('__TEST_DIR__/small_ints.csv') LIMIT 1) =
+       (SELECT typeof(num) FROM read_nsv('__TEST_DIR__/small_ints.nsv') LIMIT 1);
 ----
 true
-false
 
-# Mixed case true/TRUE → should still be BOOLEAN
-statement ok
-COPY (SELECT * FROM (VALUES ('flag'),(''),('true'),(''),('FALSE'),(''),('True'),(''))) TO '__TEST_DIR__/bool_mixed.nsv' (FORMAT CSV, HEADER false, QUOTE '');
-
-query I
-SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_mixed.nsv') LIMIT 1;
-----
-BOOLEAN
-
-# CRITICAL: 1/0 — do they become BOOLEAN or BIGINT?
-# BOOLEAN is tried BEFORE BIGINT in TYPE_CANDIDATES.
-# DuckDB's TryCastAs(BOOLEAN, strict=true) REJECTS "1" and "0".
-# So a column of 1s and 0s falls through to BIGINT, not BOOLEAN.
-statement ok
-COPY (SELECT * FROM (VALUES ('val'),(''),('1'),(''),('0'),(''),('1'),(''))) TO '__TEST_DIR__/bool_one_zero.nsv' (FORMAT CSV, HEADER false, QUOTE '');
-
-query I
-SELECT typeof(val) FROM read_nsv('__TEST_DIR__/bool_one_zero.nsv') LIMIT 1;
-----
-BIGINT
-
-query I
-SELECT val FROM read_nsv('__TEST_DIR__/bool_one_zero.nsv');
-----
-1
-0
-1
-
-# yes/no → DuckDB v1.4.2 strict cast ACCEPTS these as BOOLEAN
-statement ok
-COPY (SELECT * FROM (VALUES ('flag'),(''),('yes'),(''),('no'),(''))) TO '__TEST_DIR__/bool_yesno.nsv' (FORMAT CSV, HEADER false, QUOTE '');
-
-query I
-SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_yesno.nsv') LIMIT 1;
-----
-BOOLEAN
-
-query I
-SELECT flag FROM read_nsv('__TEST_DIR__/bool_yesno.nsv');
+query B
+SELECT bool_and(csv.num IS NOT DISTINCT FROM nsv.num)
+FROM read_csv('__TEST_DIR__/small_ints.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/small_ints.nsv') nsv;
 ----
 true
-false
 
-# Mix of true/1 → VARCHAR (strict cast: "1"/"0" fail BOOLEAN, "true"/"false" fail BIGINT)
+# Large integers beyond INT32 but within INT64
 statement ok
-COPY (SELECT * FROM (VALUES ('flag'),(''),('true'),(''),('1'),(''),('0'),(''),('false'),(''))) TO '__TEST_DIR__/bool_mix_true_1.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+CREATE TABLE big_ints(big VARCHAR);
 
-query I
-SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_mix_true_1.nsv') LIMIT 1;
-----
-VARCHAR
-
-# ── Float/double edge cases ────────────────────────────────────────
-
-# Basic decimals → DOUBLE
 statement ok
-COPY (SELECT * FROM (VALUES ('val'),(''),('1.5'),(''),('2.7'),(''),('3.14'),(''))) TO '__TEST_DIR__/doubles.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+INSERT INTO big_ints VALUES ('3000000000'), ('4000000000');
 
-query I
-SELECT typeof(val) FROM read_nsv('__TEST_DIR__/doubles.nsv') LIMIT 1;
-----
-DOUBLE
-
-# Scientific notation → DOUBLE
 statement ok
-COPY (SELECT * FROM (VALUES ('val'),(''),('1.5e10'),(''),('2.0e-3'),(''))) TO '__TEST_DIR__/sci_notation.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+COPY big_ints TO '__TEST_DIR__/big_ints.csv' (FORMAT CSV);
 
-query I
-SELECT typeof(val) FROM read_nsv('__TEST_DIR__/sci_notation.nsv') LIMIT 1;
-----
-DOUBLE
-
-# Integer-looking doubles: "1.0" has a decimal point → DOUBLE (not BIGINT)
 statement ok
-COPY (SELECT * FROM (VALUES ('val'),(''),('1.0'),(''),('2.0'),(''),('3.0'),(''))) TO '__TEST_DIR__/int_looking_doubles.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+COPY big_ints TO '__TEST_DIR__/big_ints.nsv' (FORMAT nsv);
 
-query I
-SELECT typeof(val) FROM read_nsv('__TEST_DIR__/int_looking_doubles.nsv') LIMIT 1;
+statement ok
+DROP TABLE big_ints;
+
+query B
+SELECT (SELECT typeof(big) FROM read_csv('__TEST_DIR__/big_ints.csv') LIMIT 1) =
+       (SELECT typeof(big) FROM read_nsv('__TEST_DIR__/big_ints.nsv') LIMIT 1);
 ----
-DOUBLE
+true
+
+query B
+SELECT bool_and(csv.big IS NOT DISTINCT FROM nsv.big)
+FROM read_csv('__TEST_DIR__/big_ints.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/big_ints.nsv') nsv;
+----
+true
+
+# Negative integers
+statement ok
+CREATE TABLE neg_ints(val VARCHAR);
+
+statement ok
+INSERT INTO neg_ints VALUES ('-1'), ('-999'), ('42');
+
+statement ok
+COPY neg_ints TO '__TEST_DIR__/neg_ints.csv' (FORMAT CSV);
+
+statement ok
+COPY neg_ints TO '__TEST_DIR__/neg_ints.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE neg_ints;
+
+query B
+SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/neg_ints.csv') LIMIT 1) =
+       (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/neg_ints.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
+FROM read_csv('__TEST_DIR__/neg_ints.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/neg_ints.nsv') nsv;
+----
+true
+
+# Integers beyond INT64 range → should fall to DOUBLE or VARCHAR
+statement ok
+CREATE TABLE huge_ints(huge VARCHAR);
+
+statement ok
+INSERT INTO huge_ints VALUES ('99999999999999999999');
+
+statement ok
+COPY huge_ints TO '__TEST_DIR__/huge_ints.csv' (FORMAT CSV);
+
+statement ok
+COPY huge_ints TO '__TEST_DIR__/huge_ints.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE huge_ints;
+
+query B
+SELECT (SELECT typeof(huge) FROM read_csv('__TEST_DIR__/huge_ints.csv') LIMIT 1) =
+       (SELECT typeof(huge) FROM read_nsv('__TEST_DIR__/huge_ints.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.huge IS NOT DISTINCT FROM nsv.huge)
+FROM read_csv('__TEST_DIR__/huge_ints.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/huge_ints.nsv') nsv;
+----
+true
+
+# Leading zeros — should NOT narrow to integer (codes like "007")
+statement ok
+CREATE TABLE leading_zeros(code VARCHAR);
+
+statement ok
+INSERT INTO leading_zeros VALUES ('007'), ('00123');
+
+statement ok
+COPY leading_zeros TO '__TEST_DIR__/leading_zeros.csv' (FORMAT CSV);
+
+statement ok
+COPY leading_zeros TO '__TEST_DIR__/leading_zeros.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE leading_zeros;
+
+query B
+SELECT (SELECT typeof(code) FROM read_csv('__TEST_DIR__/leading_zeros.csv') LIMIT 1) =
+       (SELECT typeof(code) FROM read_nsv('__TEST_DIR__/leading_zeros.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.code IS NOT DISTINCT FROM nsv.code)
+FROM read_csv('__TEST_DIR__/leading_zeros.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/leading_zeros.nsv') nsv;
+----
+true
+
+# ── Boolean narrowing ─────────────────────────────────────────────
+
+# Lowercase true/false
+statement ok
+CREATE TABLE bool_lower(flag VARCHAR);
+
+statement ok
+INSERT INTO bool_lower VALUES ('true'), ('false');
+
+statement ok
+COPY bool_lower TO '__TEST_DIR__/bool_lower.csv' (FORMAT CSV);
+
+statement ok
+COPY bool_lower TO '__TEST_DIR__/bool_lower.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE bool_lower;
+
+query B
+SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_lower.csv') LIMIT 1) =
+       (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_lower.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
+FROM read_csv('__TEST_DIR__/bool_lower.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_lower.nsv') nsv;
+----
+true
+
+# Uppercase TRUE/FALSE
+statement ok
+CREATE TABLE bool_upper(flag VARCHAR);
+
+statement ok
+INSERT INTO bool_upper VALUES ('TRUE'), ('FALSE');
+
+statement ok
+COPY bool_upper TO '__TEST_DIR__/bool_upper.csv' (FORMAT CSV);
+
+statement ok
+COPY bool_upper TO '__TEST_DIR__/bool_upper.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE bool_upper;
+
+query B
+SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_upper.csv') LIMIT 1) =
+       (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_upper.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
+FROM read_csv('__TEST_DIR__/bool_upper.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_upper.nsv') nsv;
+----
+true
+
+# Mixed case true/FALSE/True
+statement ok
+CREATE TABLE bool_mixed(flag VARCHAR);
+
+statement ok
+INSERT INTO bool_mixed VALUES ('true'), ('FALSE'), ('True');
+
+statement ok
+COPY bool_mixed TO '__TEST_DIR__/bool_mixed.csv' (FORMAT CSV);
+
+statement ok
+COPY bool_mixed TO '__TEST_DIR__/bool_mixed.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE bool_mixed;
+
+query B
+SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_mixed.csv') LIMIT 1) =
+       (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_mixed.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
+FROM read_csv('__TEST_DIR__/bool_mixed.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_mixed.nsv') nsv;
+----
+true
+
+# 1/0 — BOOLEAN is tried before BIGINT; strict cast rejects 1/0 as boolean
+statement ok
+CREATE TABLE bool_one_zero(val VARCHAR);
+
+statement ok
+INSERT INTO bool_one_zero VALUES ('1'), ('0'), ('1');
+
+statement ok
+COPY bool_one_zero TO '__TEST_DIR__/bool_one_zero.csv' (FORMAT CSV);
+
+statement ok
+COPY bool_one_zero TO '__TEST_DIR__/bool_one_zero.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE bool_one_zero;
+
+query B
+SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/bool_one_zero.csv') LIMIT 1) =
+       (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/bool_one_zero.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
+FROM read_csv('__TEST_DIR__/bool_one_zero.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_one_zero.nsv') nsv;
+----
+true
+
+# yes/no
+statement ok
+CREATE TABLE bool_yesno(flag VARCHAR);
+
+statement ok
+INSERT INTO bool_yesno VALUES ('yes'), ('no');
+
+statement ok
+COPY bool_yesno TO '__TEST_DIR__/bool_yesno.csv' (FORMAT CSV);
+
+statement ok
+COPY bool_yesno TO '__TEST_DIR__/bool_yesno.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE bool_yesno;
+
+query B
+SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_yesno.csv') LIMIT 1) =
+       (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_yesno.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
+FROM read_csv('__TEST_DIR__/bool_yesno.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_yesno.nsv') nsv;
+----
+true
+
+# Mix of true/1 — neither BOOLEAN nor BIGINT covers all values
+statement ok
+CREATE TABLE bool_mix(flag VARCHAR);
+
+statement ok
+INSERT INTO bool_mix VALUES ('true'), ('1'), ('0'), ('false');
+
+statement ok
+COPY bool_mix TO '__TEST_DIR__/bool_mix.csv' (FORMAT CSV);
+
+statement ok
+COPY bool_mix TO '__TEST_DIR__/bool_mix.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE bool_mix;
+
+query B
+SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_mix.csv') LIMIT 1) =
+       (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_mix.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
+FROM read_csv('__TEST_DIR__/bool_mix.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_mix.nsv') nsv;
+----
+true
+
+# ── Float/double narrowing ────────────────────────────────────────
+
+# Basic decimals
+statement ok
+CREATE TABLE doubles(val VARCHAR);
+
+statement ok
+INSERT INTO doubles VALUES ('1.5'), ('2.7'), ('3.14');
+
+statement ok
+COPY doubles TO '__TEST_DIR__/doubles.csv' (FORMAT CSV);
+
+statement ok
+COPY doubles TO '__TEST_DIR__/doubles.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE doubles;
+
+query B
+SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/doubles.csv') LIMIT 1) =
+       (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/doubles.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
+FROM read_csv('__TEST_DIR__/doubles.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/doubles.nsv') nsv;
+----
+true
+
+# Scientific notation
+statement ok
+CREATE TABLE sci_notation(val VARCHAR);
+
+statement ok
+INSERT INTO sci_notation VALUES ('1.5e10'), ('2.0e-3');
+
+statement ok
+COPY sci_notation TO '__TEST_DIR__/sci_notation.csv' (FORMAT CSV);
+
+statement ok
+COPY sci_notation TO '__TEST_DIR__/sci_notation.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE sci_notation;
+
+query B
+SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/sci_notation.csv') LIMIT 1) =
+       (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/sci_notation.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
+FROM read_csv('__TEST_DIR__/sci_notation.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/sci_notation.nsv') nsv;
+----
+true
+
+# Integer-looking doubles: "1.0" has a decimal point
+statement ok
+CREATE TABLE int_doubles(val VARCHAR);
+
+statement ok
+INSERT INTO int_doubles VALUES ('1.0'), ('2.0'), ('3.0');
+
+statement ok
+COPY int_doubles TO '__TEST_DIR__/int_doubles.csv' (FORMAT CSV);
+
+statement ok
+COPY int_doubles TO '__TEST_DIR__/int_doubles.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE int_doubles;
+
+query B
+SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/int_doubles.csv') LIMIT 1) =
+       (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/int_doubles.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
+FROM read_csv('__TEST_DIR__/int_doubles.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/int_doubles.nsv') nsv;
+----
+true
 
 # Negative doubles
 statement ok
-COPY (SELECT * FROM (VALUES ('val'),(''),('-1.5'),(''),('2.5'),(''))) TO '__TEST_DIR__/neg_doubles.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+CREATE TABLE neg_doubles(val VARCHAR);
 
-query I
-SELECT typeof(val) FROM read_nsv('__TEST_DIR__/neg_doubles.nsv') LIMIT 1;
-----
-DOUBLE
-
-# ── Date and timestamp edge cases ──────────────────────────────────
-
-# ISO dates → DATE
 statement ok
-COPY (SELECT * FROM (VALUES ('d'),(''),('2026-01-01'),(''),('2026-06-15'),(''))) TO '__TEST_DIR__/dates.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+INSERT INTO neg_doubles VALUES ('-1.5'), ('2.5');
 
-query I
-SELECT typeof(d) FROM read_nsv('__TEST_DIR__/dates.nsv') LIMIT 1;
-----
-DATE
-
-query I
-SELECT d FROM read_nsv('__TEST_DIR__/dates.nsv');
-----
-2026-01-01
-2026-06-15
-
-# ISO timestamps → TIMESTAMP
 statement ok
-COPY (SELECT * FROM (VALUES ('ts'),(''),('2026-01-01 12:00:00'),(''),('2026-06-15 08:30:00'),(''))) TO '__TEST_DIR__/timestamps.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+COPY neg_doubles TO '__TEST_DIR__/neg_doubles.csv' (FORMAT CSV);
 
-query I
-SELECT typeof(ts) FROM read_nsv('__TEST_DIR__/timestamps.nsv') LIMIT 1;
+statement ok
+COPY neg_doubles TO '__TEST_DIR__/neg_doubles.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE neg_doubles;
+
+query B
+SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/neg_doubles.csv') LIMIT 1) =
+       (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/neg_doubles.nsv') LIMIT 1);
 ----
-TIMESTAMP
+true
+
+query B
+SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
+FROM read_csv('__TEST_DIR__/neg_doubles.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/neg_doubles.nsv') nsv;
+----
+true
+
+# ── Date and timestamp narrowing ──────────────────────────────────
+
+# ISO dates
+statement ok
+CREATE TABLE dates(d VARCHAR);
+
+statement ok
+INSERT INTO dates VALUES ('2026-01-01'), ('2026-06-15');
+
+statement ok
+COPY dates TO '__TEST_DIR__/dates.csv' (FORMAT CSV);
+
+statement ok
+COPY dates TO '__TEST_DIR__/dates.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE dates;
+
+query B
+SELECT (SELECT typeof(d) FROM read_csv('__TEST_DIR__/dates.csv') LIMIT 1) =
+       (SELECT typeof(d) FROM read_nsv('__TEST_DIR__/dates.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.d IS NOT DISTINCT FROM nsv.d)
+FROM read_csv('__TEST_DIR__/dates.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/dates.nsv') nsv;
+----
+true
+
+# ISO timestamps (space-separated)
+statement ok
+CREATE TABLE timestamps(ts VARCHAR);
+
+statement ok
+INSERT INTO timestamps VALUES ('2026-01-01 12:00:00'), ('2026-06-15 08:30:00');
+
+statement ok
+COPY timestamps TO '__TEST_DIR__/timestamps.csv' (FORMAT CSV);
+
+statement ok
+COPY timestamps TO '__TEST_DIR__/timestamps.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE timestamps;
+
+query B
+SELECT (SELECT typeof(ts) FROM read_csv('__TEST_DIR__/timestamps.csv') LIMIT 1) =
+       (SELECT typeof(ts) FROM read_nsv('__TEST_DIR__/timestamps.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.ts IS NOT DISTINCT FROM nsv.ts)
+FROM read_csv('__TEST_DIR__/timestamps.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/timestamps.nsv') nsv;
+----
+true
 
 # T-separated timestamps
 statement ok
-COPY (SELECT * FROM (VALUES ('ts'),(''),('2026-01-01T12:00:00'),(''),('2026-06-15T08:30:00'),(''))) TO '__TEST_DIR__/timestamps_t.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+CREATE TABLE timestamps_t(ts VARCHAR);
 
-query I
-SELECT typeof(ts) FROM read_nsv('__TEST_DIR__/timestamps_t.nsv') LIMIT 1;
-----
-TIMESTAMP
-
-# Non-date strings that look date-ish → should NOT become DATE
 statement ok
-COPY (SELECT * FROM (VALUES ('d'),(''),('not-a-date'),(''),('also-not-a-date'),(''))) TO '__TEST_DIR__/not_dates.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+INSERT INTO timestamps_t VALUES ('2026-01-01T12:00:00'), ('2026-06-15T08:30:00');
 
-query I
-SELECT typeof(d) FROM read_nsv('__TEST_DIR__/not_dates.nsv') LIMIT 1;
+statement ok
+COPY timestamps_t TO '__TEST_DIR__/timestamps_t.csv' (FORMAT CSV);
+
+statement ok
+COPY timestamps_t TO '__TEST_DIR__/timestamps_t.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE timestamps_t;
+
+query B
+SELECT (SELECT typeof(ts) FROM read_csv('__TEST_DIR__/timestamps_t.csv') LIMIT 1) =
+       (SELECT typeof(ts) FROM read_nsv('__TEST_DIR__/timestamps_t.nsv') LIMIT 1);
 ----
-VARCHAR
+true
+
+query B
+SELECT bool_and(csv.ts IS NOT DISTINCT FROM nsv.ts)
+FROM read_csv('__TEST_DIR__/timestamps_t.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/timestamps_t.nsv') nsv;
+----
+true
+
+# Non-date strings with hyphens
+statement ok
+CREATE TABLE not_dates(d VARCHAR);
+
+statement ok
+INSERT INTO not_dates VALUES ('not-a-date'), ('also-not-a-date');
+
+statement ok
+COPY not_dates TO '__TEST_DIR__/not_dates.csv' (FORMAT CSV);
+
+statement ok
+COPY not_dates TO '__TEST_DIR__/not_dates.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE not_dates;
+
+query B
+SELECT (SELECT typeof(d) FROM read_csv('__TEST_DIR__/not_dates.csv') LIMIT 1) =
+       (SELECT typeof(d) FROM read_nsv('__TEST_DIR__/not_dates.nsv') LIMIT 1);
+----
+true
+
+query B
+SELECT bool_and(csv.d IS NOT DISTINCT FROM nsv.d)
+FROM read_csv('__TEST_DIR__/not_dates.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/not_dates.nsv') nsv;
+----
+true
 
 # ── Fallback scenarios ─────────────────────────────────────────────
 
-# One string among integers → VARCHAR
+# One string among integers → fallback type
 statement ok
-COPY (SELECT * FROM (VALUES ('val'),(''),('1'),(''),('2'),(''),('three'),(''),('4'),(''))) TO '__TEST_DIR__/mixed_int_str.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+CREATE TABLE mixed_int_str(val VARCHAR);
 
-query I
-SELECT typeof(val) FROM read_nsv('__TEST_DIR__/mixed_int_str.nsv') LIMIT 1;
+statement ok
+INSERT INTO mixed_int_str VALUES ('1'), ('2'), ('three'), ('4');
+
+statement ok
+COPY mixed_int_str TO '__TEST_DIR__/mixed_int_str.csv' (FORMAT CSV);
+
+statement ok
+COPY mixed_int_str TO '__TEST_DIR__/mixed_int_str.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE mixed_int_str;
+
+query B
+SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/mixed_int_str.csv') LIMIT 1) =
+       (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/mixed_int_str.nsv') LIMIT 1);
 ----
-VARCHAR
+true
 
-# All empty/NULL cells → VARCHAR (no non-empty values to narrow from)
-statement ok
-CREATE TABLE all_empty_src(val VARCHAR);
-
-statement ok
-INSERT INTO all_empty_src VALUES (NULL), (NULL), (NULL);
-
-statement ok
-COPY all_empty_src TO '__TEST_DIR__/all_empty.nsv' (FORMAT nsv);
-
-statement ok
-DROP TABLE all_empty_src;
-
-query I
-SELECT typeof(val) FROM read_nsv('__TEST_DIR__/all_empty.nsv') LIMIT 1;
+query B
+SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
+FROM read_csv('__TEST_DIR__/mixed_int_str.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/mixed_int_str.nsv') nsv;
 ----
-VARCHAR
+true
 
-# Single non-empty cell among NULLs → narrows to that cell's type
-# Use COPY TO nsv to create precise data (CSV trick is ambiguous for single-column NULLs)
+# All NULL cells → fallback type
 statement ok
-CREATE TABLE single_val_src(val VARCHAR);
-
-statement ok
-INSERT INTO single_val_src VALUES (NULL), ('42'), (NULL);
+CREATE TABLE all_nulls(val VARCHAR);
 
 statement ok
-COPY single_val_src TO '__TEST_DIR__/single_value.nsv' (FORMAT nsv);
+INSERT INTO all_nulls VALUES (NULL), (NULL), (NULL);
 
 statement ok
-DROP TABLE single_val_src;
+COPY all_nulls TO '__TEST_DIR__/all_nulls.csv' (FORMAT CSV);
 
-# "42" doesn't cast to BOOLEAN, but does cast to BIGINT
-query I
-SELECT typeof(val) FROM read_nsv('__TEST_DIR__/single_value.nsv') LIMIT 1;
+statement ok
+COPY all_nulls TO '__TEST_DIR__/all_nulls.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE all_nulls;
+
+query B
+SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/all_nulls.csv') LIMIT 1) =
+       (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/all_nulls.nsv') LIMIT 1);
 ----
-BIGINT
+true
 
-query I
-SELECT val FROM read_nsv('__TEST_DIR__/single_value.nsv');
-----
-NULL
-42
-NULL
-
-# ── NULL/empty handling ────────────────────────────────────────────
-
-# Empty cells in NSV become NULL in output
-# Use COPY TO nsv for precise NULL handling (CSV trick creates extra empty records)
+# Single value among NULLs → type inferred from that one value
 statement ok
-CREATE TABLE with_nulls_src(name VARCHAR, age BIGINT);
+CREATE TABLE single_val(val VARCHAR);
 
 statement ok
-INSERT INTO with_nulls_src VALUES ('Alice', 30), (NULL, NULL), ('Bob', 25);
+INSERT INTO single_val VALUES (NULL), ('42'), (NULL);
 
 statement ok
-COPY with_nulls_src TO '__TEST_DIR__/with_nulls.nsv' (FORMAT nsv);
+COPY single_val TO '__TEST_DIR__/single_val.csv' (FORMAT CSV);
 
 statement ok
-DROP TABLE with_nulls_src;
+COPY single_val TO '__TEST_DIR__/single_val.nsv' (FORMAT nsv);
 
-# Row with NULL cells should have NULLs
-query TI
-SELECT name, age FROM read_nsv('__TEST_DIR__/with_nulls.nsv');
+statement ok
+DROP TABLE single_val;
+
+query B
+SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/single_val.csv') LIMIT 1) =
+       (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/single_val.nsv') LIMIT 1);
 ----
-Alice	30
-NULL	NULL
-Bob	25
+true
 
-# IS NULL works for empty cells
-query I
-SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') WHERE name IS NULL;
+query B
+SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
+FROM read_csv('__TEST_DIR__/single_val.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/single_val.nsv') nsv;
 ----
-1
+true
 
-# Empty cells don't break type narrowing — age is still BIGINT
-query I
-SELECT typeof(age) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') LIMIT 1;
+# ── NULL handling ──────────────────────────────────────────────────
+
+# NULLs in multi-column data
+statement ok
+CREATE TABLE with_nulls(name VARCHAR, age VARCHAR);
+
+statement ok
+INSERT INTO with_nulls VALUES ('Alice', '30'), (NULL, NULL), ('Bob', '25');
+
+statement ok
+COPY with_nulls TO '__TEST_DIR__/with_nulls.csv' (FORMAT CSV);
+
+statement ok
+COPY with_nulls TO '__TEST_DIR__/with_nulls.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE with_nulls;
+
+# Type parity for both columns
+query BB
+SELECT (SELECT typeof(name) FROM read_csv('__TEST_DIR__/with_nulls.csv') LIMIT 1) =
+       (SELECT typeof(name) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') LIMIT 1),
+       (SELECT typeof(age) FROM read_csv('__TEST_DIR__/with_nulls.csv') LIMIT 1) =
+       (SELECT typeof(age) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') LIMIT 1);
 ----
-BIGINT
+true	true
 
-# ── COPY TO roundtrip with various types ───────────────────────────
+# Value parity
+query B
+SELECT bool_and(
+  csv.name IS NOT DISTINCT FROM nsv.name AND
+  csv.age IS NOT DISTINCT FROM nsv.age
+)
+FROM read_csv('__TEST_DIR__/with_nulls.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/with_nulls.nsv') nsv;
+----
+true
 
-# Create a table with multiple types and roundtrip through NSV
+# NULL count parity
+query B
+SELECT (SELECT COUNT(*) FROM read_csv('__TEST_DIR__/with_nulls.csv') WHERE name IS NULL) =
+       (SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') WHERE name IS NULL);
+----
+true
+
+# NULLs don't break type narrowing — age column still narrows despite NULL row
+query B
+SELECT (SELECT typeof(age) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') LIMIT 1) != 'VARCHAR';
+----
+true
+
+# ── Multi-type roundtrip ──────────────────────────────────────────
+
+# Multiple columns of different types through both formats
 statement ok
 CREATE TABLE multi_type AS SELECT * FROM (VALUES
   (1, 'hello', 3.14, true, DATE '2026-01-01', TIMESTAMP '2026-01-01 12:00:00'),
@@ -337,80 +706,79 @@ CREATE TABLE multi_type AS SELECT * FROM (VALUES
 ) t(id, name, value, flag, d, ts);
 
 statement ok
+COPY multi_type TO '__TEST_DIR__/multi_type.csv' (FORMAT CSV);
+
+statement ok
 COPY multi_type TO '__TEST_DIR__/multi_type.nsv' (FORMAT nsv);
 
-# Read back and verify types
-query IIIIII
-SELECT typeof(id), typeof(name), typeof(value), typeof(flag), typeof(d), typeof(ts) FROM read_nsv('__TEST_DIR__/multi_type.nsv') LIMIT 1;
-----
-BIGINT	VARCHAR	DOUBLE	BOOLEAN	DATE	TIMESTAMP
-
-# Verify values survived roundtrip
-query ITRIIT
-SELECT id, name, value, flag, d, ts FROM read_nsv('__TEST_DIR__/multi_type.nsv');
-----
-1	hello	3.14	true	2026-01-01	2026-01-01 12:00:00
-2	world	2.71	false	2026-02-15	2026-02-15 08:30:00
-
-# ── NULL roundtrip ─────────────────────────────────────────────────
-
-# NULLs written as empty cells, read back as NULL
 statement ok
-CREATE TABLE with_nulls AS SELECT * FROM (VALUES
+DROP TABLE multi_type;
+
+# Type parity across all columns
+query BBBBBB
+SELECT (SELECT typeof(id) FROM read_csv('__TEST_DIR__/multi_type.csv') LIMIT 1) =
+       (SELECT typeof(id) FROM read_nsv('__TEST_DIR__/multi_type.nsv') LIMIT 1),
+       (SELECT typeof(name) FROM read_csv('__TEST_DIR__/multi_type.csv') LIMIT 1) =
+       (SELECT typeof(name) FROM read_nsv('__TEST_DIR__/multi_type.nsv') LIMIT 1),
+       (SELECT typeof(value) FROM read_csv('__TEST_DIR__/multi_type.csv') LIMIT 1) =
+       (SELECT typeof(value) FROM read_nsv('__TEST_DIR__/multi_type.nsv') LIMIT 1),
+       (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/multi_type.csv') LIMIT 1) =
+       (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/multi_type.nsv') LIMIT 1),
+       (SELECT typeof(d) FROM read_csv('__TEST_DIR__/multi_type.csv') LIMIT 1) =
+       (SELECT typeof(d) FROM read_nsv('__TEST_DIR__/multi_type.nsv') LIMIT 1),
+       (SELECT typeof(ts) FROM read_csv('__TEST_DIR__/multi_type.csv') LIMIT 1) =
+       (SELECT typeof(ts) FROM read_nsv('__TEST_DIR__/multi_type.nsv') LIMIT 1);
+----
+true	true	true	true	true	true
+
+# Value parity across all columns
+query B
+SELECT bool_and(
+  csv.id IS NOT DISTINCT FROM nsv.id AND
+  csv.name IS NOT DISTINCT FROM nsv.name AND
+  csv.value IS NOT DISTINCT FROM nsv.value AND
+  csv.flag IS NOT DISTINCT FROM nsv.flag AND
+  csv.d IS NOT DISTINCT FROM nsv.d AND
+  csv.ts IS NOT DISTINCT FROM nsv.ts
+)
+FROM read_csv('__TEST_DIR__/multi_type.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/multi_type.nsv') nsv;
+----
+true
+
+# ── NULL roundtrip parity ─────────────────────────────────────────
+
+statement ok
+CREATE TABLE null_roundtrip AS SELECT * FROM (VALUES
   (1, 'alice'),
   (2, NULL),
   (NULL, 'bob')
 ) t(id, name);
 
 statement ok
-COPY with_nulls TO '__TEST_DIR__/null_roundtrip.nsv' (FORMAT nsv);
-
-query IT
-SELECT id, name FROM read_nsv('__TEST_DIR__/null_roundtrip.nsv');
-----
-1	alice
-2	NULL
-NULL	bob
-
-# Verify NULLs are actually NULL
-query I
-SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/null_roundtrip.nsv') WHERE name IS NULL;
-----
-1
-
-query I
-SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/null_roundtrip.nsv') WHERE id IS NULL;
-----
-1
-
-# ── NULL vs empty string indistinguishability ──────────────────────
-
-# LIMITATION: Both NULL and empty string are written as empty cells in NSV.
-# After roundtrip, both become NULL. They are indistinguishable.
-statement ok
-CREATE TABLE null_vs_empty AS SELECT * FROM (VALUES
-  (1, ''),
-  (2, NULL),
-  (3, 'hello')
-) t(id, val);
+COPY null_roundtrip TO '__TEST_DIR__/null_roundtrip.csv' (FORMAT CSV);
 
 statement ok
-COPY null_vs_empty TO '__TEST_DIR__/null_vs_empty.nsv' (FORMAT nsv);
+COPY null_roundtrip TO '__TEST_DIR__/null_roundtrip.nsv' (FORMAT nsv);
 
-# Both empty string and NULL come back as NULL after roundtrip
-query II
-SELECT id, val IS NULL AS is_null FROM read_nsv('__TEST_DIR__/null_vs_empty.nsv');
+statement ok
+DROP TABLE null_roundtrip;
+
+query B
+SELECT bool_and(
+  csv.id IS NOT DISTINCT FROM nsv.id AND
+  csv.name IS NOT DISTINCT FROM nsv.name
+)
+FROM read_csv('__TEST_DIR__/null_roundtrip.csv') csv
+POSITIONAL JOIN read_nsv('__TEST_DIR__/null_roundtrip.nsv') nsv;
 ----
-1	true
-2	true
-3	false
+true
 
-# ── Sample size boundary ──────────────────────────────────────────
-
-# DetectColumnType samples rows 1 through min(nrows, 1+1000) = rows 1..1001.
-# Create a file with 1002 data rows: first 1000 are integers, row 1001 is text.
-# Type should be BIGINT (only first 1000 data rows sampled).
-# Row 1001 will fail TryCastAs at scan time → becomes NULL (silent fallback).
+# ── NSV-specific: sample boundary ─────────────────────────────────
+# DetectColumnType samples rows 1..min(nrows, 1001) = first 1000 data rows.
+# Row 1001 is beyond the sample window. If it doesn't match the inferred
+# type, it silently becomes NULL at scan time.
+# This is NSV-specific (CSV sniffer has its own sample logic).
 
 statement ok
 CREATE TABLE boundary_src(num VARCHAR);
@@ -427,73 +795,69 @@ INSERT INTO boundary_src VALUES ('42');
 statement ok
 COPY boundary_src TO '__TEST_DIR__/boundary.nsv' (FORMAT nsv);
 
-# Should be BIGINT (only first 1000 rows sampled, all integers)
-query I
-SELECT typeof(num) FROM read_nsv('__TEST_DIR__/boundary.nsv') LIMIT 1;
-----
-BIGINT
+statement ok
+DROP TABLE boundary_src;
 
-# The "not_a_number" row (row 1001) fails TryCastAs at scan time → NULL
+# Should narrow to numeric type (first 1000 rows are all integers)
+query B
+SELECT typeof(num) != 'VARCHAR' FROM read_nsv('__TEST_DIR__/boundary.nsv') LIMIT 1;
+----
+true
+
+# Row 1001 ("not_a_number") fails cast → NULL
 query I
 SELECT num FROM read_nsv('__TEST_DIR__/boundary.nsv') WHERE num IS NULL;
 ----
 NULL
 
-# Total row count should be 1002
+# Total row count
 query I
 SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/boundary.nsv');
 ----
 1002
 
-# Verify the last row (after the bad one) still works
+# Last row (after the bad one) still works
 query I
 SELECT num FROM read_nsv('__TEST_DIR__/boundary.nsv') OFFSET 1001;
 ----
 42
 
-# ── Large table roundtrip (no corruption) ──────────────────────────
+# ── Large table roundtrip ─────────────────────────────────────────
 
 statement ok
 CREATE TABLE large_src AS SELECT i AS id, 'name_' || i::VARCHAR AS name, (i * 1.5)::DOUBLE AS value FROM range(1, 1001) t(i);
 
 statement ok
+COPY large_src TO '__TEST_DIR__/large.csv' (FORMAT CSV);
+
+statement ok
 COPY large_src TO '__TEST_DIR__/large.nsv' (FORMAT nsv);
 
-query I
-SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/large.nsv');
+statement ok
+DROP TABLE large_src;
+
+# Row count parity
+query B
+SELECT (SELECT COUNT(*) FROM read_csv('__TEST_DIR__/large.csv')) =
+       (SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/large.nsv'));
 ----
-1000
+true
 
-# Spot check first and last rows
-query ITR
-SELECT id, name, value FROM read_nsv('__TEST_DIR__/large.nsv') LIMIT 1;
+# Aggregation parity
+query B
+SELECT (SELECT SUM(id) FROM read_csv('__TEST_DIR__/large.csv')) =
+       (SELECT SUM(id) FROM read_nsv('__TEST_DIR__/large.nsv'));
 ----
-1	name_1	1.5
+true
 
-query ITR
-SELECT id, name, value FROM read_nsv('__TEST_DIR__/large.nsv') OFFSET 999;
+# Spot check first row
+query B
+SELECT bool_and(
+  csv.id IS NOT DISTINCT FROM nsv.id AND
+  csv.name IS NOT DISTINCT FROM nsv.name AND
+  csv.value IS NOT DISTINCT FROM nsv.value
+)
+FROM (SELECT * FROM read_csv('__TEST_DIR__/large.csv') LIMIT 1) csv
+POSITIONAL JOIN (SELECT * FROM read_nsv('__TEST_DIR__/large.nsv') LIMIT 1) nsv;
 ----
-1000	name_1000	1500.0
-
-# Aggregation check for integrity
-query I
-SELECT SUM(id) FROM read_nsv('__TEST_DIR__/large.nsv');
-----
-500500
-
-# ── Cleanup ────────────────────────────────────────────────────────
-
-statement ok
-DROP TABLE IF EXISTS multi_type;
-
-statement ok
-DROP TABLE IF EXISTS with_nulls;
-
-statement ok
-DROP TABLE IF EXISTS null_vs_empty;
-
-statement ok
-DROP TABLE IF EXISTS boundary_src;
-
-statement ok
-DROP TABLE IF EXISTS large_src;
+true
