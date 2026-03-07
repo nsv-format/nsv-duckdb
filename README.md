@@ -26,7 +26,7 @@ Columns are auto-narrowed by sampling up to 1000 data rows. Candidate types are 
 
 | Priority | Type | Examples |
 |----------|------|----------|
-| 1 | `BOOLEAN` | `true`, `false`, `TRUE`, `FALSE`, `1`, `0` |
+| 1 | `BOOLEAN` | `true`, `false`, `TRUE`, `FALSE` (not `1`/`0`) |
 | 2 | `BIGINT` | `42`, `-100`, `3000000000` |
 | 3 | `DOUBLE` | `3.14`, `1.5e10`, `-0.5` |
 | 4 | `DATE` | `2026-01-15` (ISO 8601 only) |
@@ -34,7 +34,7 @@ Columns are auto-narrowed by sampling up to 1000 data rows. Candidate types are 
 | 6 | `VARCHAR` | Everything else (fallback) |
 
 **Known behaviors:**
-- `1`/`0` columns narrow to BOOLEAN (not BIGINT) — BOOLEAN is checked first
+- `1`/`0` columns narrow to BIGINT (strict cast rejects them as BOOLEAN)
 - Leading zeros (`007`) narrow to BIGINT — the zeros are lost. Use `all_varchar=true` to preserve
 - Empty cells are treated as NULL and don't influence type detection
 - NULL and empty strings are indistinguishable after roundtrip (both become empty cells in NSV)
