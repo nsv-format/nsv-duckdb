@@ -22,13 +22,13 @@ COPY small_ints TO '__TEST_DIR__/small_ints.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE small_ints;
 
-query B
+query I
 SELECT (SELECT typeof(num) FROM read_csv('__TEST_DIR__/small_ints.csv') LIMIT 1) =
        (SELECT typeof(num) FROM read_nsv('__TEST_DIR__/small_ints.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.num IS NOT DISTINCT FROM nsv.num)
 FROM read_csv('__TEST_DIR__/small_ints.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/small_ints.nsv') nsv;
@@ -51,13 +51,13 @@ COPY big_ints TO '__TEST_DIR__/big_ints.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE big_ints;
 
-query B
+query I
 SELECT (SELECT typeof(big) FROM read_csv('__TEST_DIR__/big_ints.csv') LIMIT 1) =
        (SELECT typeof(big) FROM read_nsv('__TEST_DIR__/big_ints.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.big IS NOT DISTINCT FROM nsv.big)
 FROM read_csv('__TEST_DIR__/big_ints.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/big_ints.nsv') nsv;
@@ -80,13 +80,13 @@ COPY neg_ints TO '__TEST_DIR__/neg_ints.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE neg_ints;
 
-query B
+query I
 SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/neg_ints.csv') LIMIT 1) =
        (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/neg_ints.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
 FROM read_csv('__TEST_DIR__/neg_ints.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/neg_ints.nsv') nsv;
@@ -109,13 +109,13 @@ COPY huge_ints TO '__TEST_DIR__/huge_ints.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE huge_ints;
 
-query B
+query I
 SELECT (SELECT typeof(huge) FROM read_csv('__TEST_DIR__/huge_ints.csv') LIMIT 1) =
        (SELECT typeof(huge) FROM read_nsv('__TEST_DIR__/huge_ints.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.huge IS NOT DISTINCT FROM nsv.huge)
 FROM read_csv('__TEST_DIR__/huge_ints.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/huge_ints.nsv') nsv;
@@ -138,13 +138,13 @@ COPY leading_zeros TO '__TEST_DIR__/leading_zeros.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE leading_zeros;
 
-query B
+query I
 SELECT (SELECT typeof(code) FROM read_csv('__TEST_DIR__/leading_zeros.csv') LIMIT 1) =
        (SELECT typeof(code) FROM read_nsv('__TEST_DIR__/leading_zeros.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.code IS NOT DISTINCT FROM nsv.code)
 FROM read_csv('__TEST_DIR__/leading_zeros.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/leading_zeros.nsv') nsv;
@@ -169,13 +169,13 @@ COPY bool_lower TO '__TEST_DIR__/bool_lower.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE bool_lower;
 
-query B
+query I
 SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_lower.csv') LIMIT 1) =
        (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_lower.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
 FROM read_csv('__TEST_DIR__/bool_lower.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_lower.nsv') nsv;
@@ -198,13 +198,13 @@ COPY bool_upper TO '__TEST_DIR__/bool_upper.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE bool_upper;
 
-query B
+query I
 SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_upper.csv') LIMIT 1) =
        (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_upper.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
 FROM read_csv('__TEST_DIR__/bool_upper.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_upper.nsv') nsv;
@@ -227,13 +227,13 @@ COPY bool_mixed TO '__TEST_DIR__/bool_mixed.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE bool_mixed;
 
-query B
+query I
 SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_mixed.csv') LIMIT 1) =
        (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_mixed.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
 FROM read_csv('__TEST_DIR__/bool_mixed.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_mixed.nsv') nsv;
@@ -256,13 +256,13 @@ COPY bool_one_zero TO '__TEST_DIR__/bool_one_zero.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE bool_one_zero;
 
-query B
+query I
 SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/bool_one_zero.csv') LIMIT 1) =
        (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/bool_one_zero.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
 FROM read_csv('__TEST_DIR__/bool_one_zero.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_one_zero.nsv') nsv;
@@ -285,13 +285,13 @@ COPY bool_yesno TO '__TEST_DIR__/bool_yesno.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE bool_yesno;
 
-query B
+query I
 SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_yesno.csv') LIMIT 1) =
        (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_yesno.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
 FROM read_csv('__TEST_DIR__/bool_yesno.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_yesno.nsv') nsv;
@@ -314,13 +314,13 @@ COPY bool_mix TO '__TEST_DIR__/bool_mix.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE bool_mix;
 
-query B
+query I
 SELECT (SELECT typeof(flag) FROM read_csv('__TEST_DIR__/bool_mix.csv') LIMIT 1) =
        (SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_mix.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.flag IS NOT DISTINCT FROM nsv.flag)
 FROM read_csv('__TEST_DIR__/bool_mix.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/bool_mix.nsv') nsv;
@@ -345,13 +345,13 @@ COPY doubles TO '__TEST_DIR__/doubles.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE doubles;
 
-query B
+query I
 SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/doubles.csv') LIMIT 1) =
        (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/doubles.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
 FROM read_csv('__TEST_DIR__/doubles.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/doubles.nsv') nsv;
@@ -374,13 +374,13 @@ COPY sci_notation TO '__TEST_DIR__/sci_notation.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE sci_notation;
 
-query B
+query I
 SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/sci_notation.csv') LIMIT 1) =
        (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/sci_notation.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
 FROM read_csv('__TEST_DIR__/sci_notation.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/sci_notation.nsv') nsv;
@@ -403,13 +403,13 @@ COPY int_doubles TO '__TEST_DIR__/int_doubles.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE int_doubles;
 
-query B
+query I
 SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/int_doubles.csv') LIMIT 1) =
        (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/int_doubles.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
 FROM read_csv('__TEST_DIR__/int_doubles.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/int_doubles.nsv') nsv;
@@ -432,13 +432,13 @@ COPY neg_doubles TO '__TEST_DIR__/neg_doubles.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE neg_doubles;
 
-query B
+query I
 SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/neg_doubles.csv') LIMIT 1) =
        (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/neg_doubles.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
 FROM read_csv('__TEST_DIR__/neg_doubles.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/neg_doubles.nsv') nsv;
@@ -463,13 +463,13 @@ COPY dates TO '__TEST_DIR__/dates.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE dates;
 
-query B
+query I
 SELECT (SELECT typeof(d) FROM read_csv('__TEST_DIR__/dates.csv') LIMIT 1) =
        (SELECT typeof(d) FROM read_nsv('__TEST_DIR__/dates.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.d IS NOT DISTINCT FROM nsv.d)
 FROM read_csv('__TEST_DIR__/dates.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/dates.nsv') nsv;
@@ -492,13 +492,13 @@ COPY timestamps TO '__TEST_DIR__/timestamps.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE timestamps;
 
-query B
+query I
 SELECT (SELECT typeof(ts) FROM read_csv('__TEST_DIR__/timestamps.csv') LIMIT 1) =
        (SELECT typeof(ts) FROM read_nsv('__TEST_DIR__/timestamps.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.ts IS NOT DISTINCT FROM nsv.ts)
 FROM read_csv('__TEST_DIR__/timestamps.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/timestamps.nsv') nsv;
@@ -521,13 +521,13 @@ COPY timestamps_t TO '__TEST_DIR__/timestamps_t.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE timestamps_t;
 
-query B
+query I
 SELECT (SELECT typeof(ts) FROM read_csv('__TEST_DIR__/timestamps_t.csv') LIMIT 1) =
        (SELECT typeof(ts) FROM read_nsv('__TEST_DIR__/timestamps_t.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.ts IS NOT DISTINCT FROM nsv.ts)
 FROM read_csv('__TEST_DIR__/timestamps_t.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/timestamps_t.nsv') nsv;
@@ -550,13 +550,13 @@ COPY not_dates TO '__TEST_DIR__/not_dates.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE not_dates;
 
-query B
+query I
 SELECT (SELECT typeof(d) FROM read_csv('__TEST_DIR__/not_dates.csv') LIMIT 1) =
        (SELECT typeof(d) FROM read_nsv('__TEST_DIR__/not_dates.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.d IS NOT DISTINCT FROM nsv.d)
 FROM read_csv('__TEST_DIR__/not_dates.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/not_dates.nsv') nsv;
@@ -581,13 +581,13 @@ COPY mixed_int_str TO '__TEST_DIR__/mixed_int_str.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE mixed_int_str;
 
-query B
+query I
 SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/mixed_int_str.csv') LIMIT 1) =
        (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/mixed_int_str.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
 FROM read_csv('__TEST_DIR__/mixed_int_str.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/mixed_int_str.nsv') nsv;
@@ -610,7 +610,7 @@ COPY all_nulls TO '__TEST_DIR__/all_nulls.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE all_nulls;
 
-query B
+query I
 SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/all_nulls.csv') LIMIT 1) =
        (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/all_nulls.nsv') LIMIT 1);
 ----
@@ -632,13 +632,13 @@ COPY single_val TO '__TEST_DIR__/single_val.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE single_val;
 
-query B
+query I
 SELECT (SELECT typeof(val) FROM read_csv('__TEST_DIR__/single_val.csv') LIMIT 1) =
        (SELECT typeof(val) FROM read_nsv('__TEST_DIR__/single_val.nsv') LIMIT 1);
 ----
 true
 
-query B
+query I
 SELECT bool_and(csv.val IS NOT DISTINCT FROM nsv.val)
 FROM read_csv('__TEST_DIR__/single_val.csv') csv
 POSITIONAL JOIN read_nsv('__TEST_DIR__/single_val.nsv') nsv;
@@ -664,7 +664,7 @@ statement ok
 DROP TABLE with_nulls;
 
 # Type parity for both columns
-query BB
+query II
 SELECT (SELECT typeof(name) FROM read_csv('__TEST_DIR__/with_nulls.csv') LIMIT 1) =
        (SELECT typeof(name) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') LIMIT 1),
        (SELECT typeof(age) FROM read_csv('__TEST_DIR__/with_nulls.csv') LIMIT 1) =
@@ -673,7 +673,7 @@ SELECT (SELECT typeof(name) FROM read_csv('__TEST_DIR__/with_nulls.csv') LIMIT 1
 true	true
 
 # Value parity
-query B
+query I
 SELECT bool_and(
   csv.name IS NOT DISTINCT FROM nsv.name AND
   csv.age IS NOT DISTINCT FROM nsv.age
@@ -684,14 +684,14 @@ POSITIONAL JOIN read_nsv('__TEST_DIR__/with_nulls.nsv') nsv;
 true
 
 # NULL count parity
-query B
+query I
 SELECT (SELECT COUNT(*) FROM read_csv('__TEST_DIR__/with_nulls.csv') WHERE name IS NULL) =
        (SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') WHERE name IS NULL);
 ----
 true
 
 # NULLs don't break type narrowing — age column still narrows despite NULL row
-query B
+query I
 SELECT (SELECT typeof(age) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') LIMIT 1) != 'VARCHAR';
 ----
 true
@@ -715,7 +715,7 @@ statement ok
 DROP TABLE multi_type;
 
 # Type parity across all columns
-query BBBBBB
+query IIIIII
 SELECT (SELECT typeof(id) FROM read_csv('__TEST_DIR__/multi_type.csv') LIMIT 1) =
        (SELECT typeof(id) FROM read_nsv('__TEST_DIR__/multi_type.nsv') LIMIT 1),
        (SELECT typeof(name) FROM read_csv('__TEST_DIR__/multi_type.csv') LIMIT 1) =
@@ -732,7 +732,7 @@ SELECT (SELECT typeof(id) FROM read_csv('__TEST_DIR__/multi_type.csv') LIMIT 1) 
 true	true	true	true	true	true
 
 # Value parity across all columns
-query B
+query I
 SELECT bool_and(
   csv.id IS NOT DISTINCT FROM nsv.id AND
   csv.name IS NOT DISTINCT FROM nsv.name AND
@@ -764,7 +764,7 @@ COPY null_roundtrip TO '__TEST_DIR__/null_roundtrip.nsv' (FORMAT nsv);
 statement ok
 DROP TABLE null_roundtrip;
 
-query B
+query I
 SELECT bool_and(
   csv.id IS NOT DISTINCT FROM nsv.id AND
   csv.name IS NOT DISTINCT FROM nsv.name
@@ -799,7 +799,7 @@ statement ok
 DROP TABLE boundary_src;
 
 # Should narrow to numeric type (first 1000 rows are all integers)
-query B
+query I
 SELECT typeof(num) != 'VARCHAR' FROM read_nsv('__TEST_DIR__/boundary.nsv') LIMIT 1;
 ----
 true
@@ -837,21 +837,21 @@ statement ok
 DROP TABLE large_src;
 
 # Row count parity
-query B
+query I
 SELECT (SELECT COUNT(*) FROM read_csv('__TEST_DIR__/large.csv')) =
        (SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/large.nsv'));
 ----
 true
 
 # Aggregation parity
-query B
+query I
 SELECT (SELECT SUM(id) FROM read_csv('__TEST_DIR__/large.csv')) =
        (SELECT SUM(id) FROM read_nsv('__TEST_DIR__/large.nsv'));
 ----
 true
 
 # Spot check first row
-query B
+query I
 SELECT bool_and(
   csv.id IS NOT DISTINCT FROM nsv.id AND
   csv.name IS NOT DISTINCT FROM nsv.name AND
