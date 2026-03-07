@@ -1,0 +1,484 @@
+# name: test/sql/nsv_type_narrowing.test
+# description: Comprehensive type narrowing edge cases for NSV extension
+# group: [sql]
+
+require nsv
+
+# ── Integer edge cases ─────────────────────────────────────────────
+
+# Small integers → BIGINT
+statement ok
+COPY (SELECT * FROM (VALUES ('num'),(''),('1'),(''),('2'),(''),('3'),(''))) TO '__TEST_DIR__/small_ints.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(num) FROM read_nsv('__TEST_DIR__/small_ints.nsv') LIMIT 1;
+----
+BIGINT
+
+query I
+SELECT num FROM read_nsv('__TEST_DIR__/small_ints.nsv');
+----
+1
+2
+3
+
+# Large integers beyond INT32 but within INT64 → BIGINT
+statement ok
+COPY (SELECT * FROM (VALUES ('big'),(''),('3000000000'),(''),('4000000000'),(''))) TO '__TEST_DIR__/big_ints.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(big) FROM read_nsv('__TEST_DIR__/big_ints.nsv') LIMIT 1;
+----
+BIGINT
+
+query I
+SELECT big FROM read_nsv('__TEST_DIR__/big_ints.nsv');
+----
+3000000000
+4000000000
+
+# Negative integers → BIGINT
+statement ok
+COPY (SELECT * FROM (VALUES ('val'),(''),('-1'),(''),('-999'),(''),('42'),(''))) TO '__TEST_DIR__/neg_ints.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(val) FROM read_nsv('__TEST_DIR__/neg_ints.nsv') LIMIT 1;
+----
+BIGINT
+
+# Integers beyond INT64 → should fall through to DOUBLE or VARCHAR
+# INT64 max is 9223372036854775807; this number is larger
+statement ok
+COPY (SELECT * FROM (VALUES ('huge'),(''),('99999999999999999999'),(''))) TO '__TEST_DIR__/huge_ints.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+# Beyond INT64 range: BIGINT fails, DOUBLE should succeed
+query I
+SELECT typeof(huge) FROM read_nsv('__TEST_DIR__/huge_ints.nsv') LIMIT 1;
+----
+DOUBLE
+
+# Leading zeros → TryCastAs(BIGINT) accepts these (casts to numeric value)
+statement ok
+COPY (SELECT * FROM (VALUES ('code'),(''),('007'),(''),('00123'),(''))) TO '__TEST_DIR__/leading_zeros.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+# NOTE: Leading zeros cast successfully to BIGINT, so the column narrows to BIGINT.
+# The values lose their leading zeros (007 → 7, 00123 → 123).
+# If leading zeros must be preserved, use all_varchar=true.
+query I
+SELECT typeof(code) FROM read_nsv('__TEST_DIR__/leading_zeros.nsv') LIMIT 1;
+----
+BIGINT
+
+query I
+SELECT code FROM read_nsv('__TEST_DIR__/leading_zeros.nsv');
+----
+7
+123
+
+# With all_varchar, leading zeros are preserved
+query T
+SELECT code FROM read_nsv('__TEST_DIR__/leading_zeros.nsv', all_varchar=true);
+----
+007
+00123
+
+# ── Boolean edge cases ─────────────────────────────────────────────
+
+# Lowercase true/false → BOOLEAN
+statement ok
+COPY (SELECT * FROM (VALUES ('flag'),(''),('true'),(''),('false'),(''))) TO '__TEST_DIR__/bool_lower.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_lower.nsv') LIMIT 1;
+----
+BOOLEAN
+
+# Uppercase TRUE/FALSE → test if TryCastAs(BOOLEAN) accepts these
+statement ok
+COPY (SELECT * FROM (VALUES ('flag'),(''),('TRUE'),(''),('FALSE'),(''))) TO '__TEST_DIR__/bool_upper.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_upper.nsv') LIMIT 1;
+----
+BOOLEAN
+
+query I
+SELECT flag FROM read_nsv('__TEST_DIR__/bool_upper.nsv');
+----
+true
+false
+
+# Mixed case true/TRUE → should still be BOOLEAN
+statement ok
+COPY (SELECT * FROM (VALUES ('flag'),(''),('true'),(''),('FALSE'),(''),('True'),(''))) TO '__TEST_DIR__/bool_mixed.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_mixed.nsv') LIMIT 1;
+----
+BOOLEAN
+
+# CRITICAL: 1/0 as booleans
+# BOOLEAN is tried BEFORE BIGINT in TYPE_CANDIDATES.
+# DuckDB's TryCastAs(BOOLEAN, strict=true) accepts "1" and "0".
+# So a column of 1s and 0s becomes BOOLEAN, not BIGINT.
+# This is potentially surprising behavior — documented here.
+statement ok
+COPY (SELECT * FROM (VALUES ('val'),(''),('1'),(''),('0'),(''),('1'),(''))) TO '__TEST_DIR__/bool_one_zero.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(val) FROM read_nsv('__TEST_DIR__/bool_one_zero.nsv') LIMIT 1;
+----
+BOOLEAN
+
+query I
+SELECT val FROM read_nsv('__TEST_DIR__/bool_one_zero.nsv');
+----
+true
+false
+true
+
+# yes/no → should NOT cast to BOOLEAN (DuckDB strict cast rejects these)
+statement ok
+COPY (SELECT * FROM (VALUES ('flag'),(''),('yes'),(''),('no'),(''))) TO '__TEST_DIR__/bool_yesno.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_yesno.nsv') LIMIT 1;
+----
+VARCHAR
+
+# Mix of true/1 → BOOLEAN (both are valid boolean casts)
+statement ok
+COPY (SELECT * FROM (VALUES ('flag'),(''),('true'),(''),('1'),(''),('0'),(''),('false'),(''))) TO '__TEST_DIR__/bool_mix_true_1.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_mix_true_1.nsv') LIMIT 1;
+----
+BOOLEAN
+
+# ── Float/double edge cases ────────────────────────────────────────
+
+# Basic decimals → DOUBLE
+statement ok
+COPY (SELECT * FROM (VALUES ('val'),(''),('1.5'),(''),('2.7'),(''),('3.14'),(''))) TO '__TEST_DIR__/doubles.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(val) FROM read_nsv('__TEST_DIR__/doubles.nsv') LIMIT 1;
+----
+DOUBLE
+
+# Scientific notation → DOUBLE
+statement ok
+COPY (SELECT * FROM (VALUES ('val'),(''),('1.5e10'),(''),('2.0e-3'),(''))) TO '__TEST_DIR__/sci_notation.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(val) FROM read_nsv('__TEST_DIR__/sci_notation.nsv') LIMIT 1;
+----
+DOUBLE
+
+# Integer-looking doubles: "1.0" has a decimal point → DOUBLE (not BIGINT)
+statement ok
+COPY (SELECT * FROM (VALUES ('val'),(''),('1.0'),(''),('2.0'),(''),('3.0'),(''))) TO '__TEST_DIR__/int_looking_doubles.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(val) FROM read_nsv('__TEST_DIR__/int_looking_doubles.nsv') LIMIT 1;
+----
+DOUBLE
+
+# Negative doubles
+statement ok
+COPY (SELECT * FROM (VALUES ('val'),(''),('-1.5'),(''),('2.5'),(''))) TO '__TEST_DIR__/neg_doubles.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(val) FROM read_nsv('__TEST_DIR__/neg_doubles.nsv') LIMIT 1;
+----
+DOUBLE
+
+# ── Date and timestamp edge cases ──────────────────────────────────
+
+# ISO dates → DATE
+statement ok
+COPY (SELECT * FROM (VALUES ('d'),(''),('2026-01-01'),(''),('2026-06-15'),(''))) TO '__TEST_DIR__/dates.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(d) FROM read_nsv('__TEST_DIR__/dates.nsv') LIMIT 1;
+----
+DATE
+
+query I
+SELECT d FROM read_nsv('__TEST_DIR__/dates.nsv');
+----
+2026-01-01
+2026-06-15
+
+# ISO timestamps → TIMESTAMP
+statement ok
+COPY (SELECT * FROM (VALUES ('ts'),(''),('2026-01-01 12:00:00'),(''),('2026-06-15 08:30:00'),(''))) TO '__TEST_DIR__/timestamps.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(ts) FROM read_nsv('__TEST_DIR__/timestamps.nsv') LIMIT 1;
+----
+TIMESTAMP
+
+# T-separated timestamps
+statement ok
+COPY (SELECT * FROM (VALUES ('ts'),(''),('2026-01-01T12:00:00'),(''),('2026-06-15T08:30:00'),(''))) TO '__TEST_DIR__/timestamps_t.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(ts) FROM read_nsv('__TEST_DIR__/timestamps_t.nsv') LIMIT 1;
+----
+TIMESTAMP
+
+# US-format dates (MM/DD/YYYY) — TryCastAs(DATE, strict=true) may reject non-ISO formats
+statement ok
+COPY (SELECT * FROM (VALUES ('d'),(''),('01/15/2026'),(''),('12/25/2026'),(''))) TO '__TEST_DIR__/us_dates.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+# US dates with strict cast: falls back to VARCHAR (strict mode rejects non-ISO)
+query I
+SELECT typeof(d) FROM read_nsv('__TEST_DIR__/us_dates.nsv') LIMIT 1;
+----
+VARCHAR
+
+# Text month dates → VARCHAR (strict cast rejects)
+statement ok
+COPY (SELECT * FROM (VALUES ('d'),(''),('Jan 15 2026'),(''),('Feb 20 2026'),(''))) TO '__TEST_DIR__/text_dates.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(d) FROM read_nsv('__TEST_DIR__/text_dates.nsv') LIMIT 1;
+----
+VARCHAR
+
+# ── Fallback scenarios ─────────────────────────────────────────────
+
+# One string among integers → VARCHAR
+statement ok
+COPY (SELECT * FROM (VALUES ('val'),(''),('1'),(''),('2'),(''),('three'),(''),('4'),(''))) TO '__TEST_DIR__/mixed_int_str.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(val) FROM read_nsv('__TEST_DIR__/mixed_int_str.nsv') LIMIT 1;
+----
+VARCHAR
+
+# All empty cells → VARCHAR (no non-empty values to narrow from)
+statement ok
+COPY (SELECT * FROM (VALUES ('val'),(''),(''),(''),(''),(''))) TO '__TEST_DIR__/all_empty.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query I
+SELECT typeof(val) FROM read_nsv('__TEST_DIR__/all_empty.nsv') LIMIT 1;
+----
+VARCHAR
+
+# Single non-empty cell among empty cells → narrows to that cell's type
+statement ok
+COPY (SELECT * FROM (VALUES ('val'),(''),(''),(''),('42'),(''),(''),(''))) TO '__TEST_DIR__/single_value.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+# The single non-empty value "42" casts to BOOLEAN (since "42" doesn't cast to BOOLEAN,
+# but does cast to BIGINT). Wait — BOOLEAN is tried first. "42" doesn't cast to BOOLEAN.
+# So BIGINT should be selected.
+query I
+SELECT typeof(val) FROM read_nsv('__TEST_DIR__/single_value.nsv') LIMIT 1;
+----
+BIGINT
+
+query I
+SELECT val FROM read_nsv('__TEST_DIR__/single_value.nsv');
+----
+NULL
+42
+NULL
+
+# ── NULL/empty handling ────────────────────────────────────────────
+
+# Empty cells in NSV become NULL in output
+statement ok
+COPY (SELECT * FROM (VALUES ('name'),('age'),(''),('Alice'),('30'),(''),(''),(''),(''),('Bob'),('25'),(''))) TO '__TEST_DIR__/with_nulls.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+# Row with empty cells should have NULLs
+query TI
+SELECT name, age FROM read_nsv('__TEST_DIR__/with_nulls.nsv');
+----
+Alice	30
+NULL	NULL
+Bob	25
+
+# IS NULL works for empty cells
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') WHERE name IS NULL;
+----
+1
+
+# Empty cells don't break type narrowing — age is still BIGINT
+query I
+SELECT typeof(age) FROM read_nsv('__TEST_DIR__/with_nulls.nsv') LIMIT 1;
+----
+BIGINT
+
+# ── COPY TO roundtrip with various types ───────────────────────────
+
+# Create a table with multiple types and roundtrip through NSV
+statement ok
+CREATE TABLE multi_type AS SELECT * FROM (VALUES
+  (1, 'hello', 3.14, true, DATE '2026-01-01', TIMESTAMP '2026-01-01 12:00:00'),
+  (2, 'world', 2.71, false, DATE '2026-02-15', TIMESTAMP '2026-02-15 08:30:00')
+) t(id, name, value, flag, d, ts);
+
+statement ok
+COPY multi_type TO '__TEST_DIR__/multi_type.nsv' (FORMAT nsv);
+
+# Read back and verify types
+query IIIIII
+SELECT typeof(id), typeof(name), typeof(value), typeof(flag), typeof(d), typeof(ts) FROM read_nsv('__TEST_DIR__/multi_type.nsv') LIMIT 1;
+----
+BIGINT	VARCHAR	DOUBLE	BOOLEAN	DATE	TIMESTAMP
+
+# Verify values survived roundtrip
+query ITRIIT
+SELECT id, name, value, flag, d, ts FROM read_nsv('__TEST_DIR__/multi_type.nsv');
+----
+1	hello	3.14	true	2026-01-01	2026-01-01 12:00:00
+2	world	2.71	false	2026-02-15	2026-02-15 08:30:00
+
+# ── NULL roundtrip ─────────────────────────────────────────────────
+
+# NULLs written as empty cells, read back as NULL
+statement ok
+CREATE TABLE with_nulls AS SELECT * FROM (VALUES
+  (1, 'alice'),
+  (2, NULL),
+  (NULL, 'bob')
+) t(id, name);
+
+statement ok
+COPY with_nulls TO '__TEST_DIR__/null_roundtrip.nsv' (FORMAT nsv);
+
+query IT
+SELECT id, name FROM read_nsv('__TEST_DIR__/null_roundtrip.nsv');
+----
+1	alice
+2	NULL
+NULL	bob
+
+# Verify NULLs are actually NULL
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/null_roundtrip.nsv') WHERE name IS NULL;
+----
+1
+
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/null_roundtrip.nsv') WHERE id IS NULL;
+----
+1
+
+# ── NULL vs empty string indistinguishability ──────────────────────
+
+# LIMITATION: Both NULL and empty string are written as empty cells in NSV.
+# After roundtrip, both become NULL. They are indistinguishable.
+statement ok
+CREATE TABLE null_vs_empty AS SELECT * FROM (VALUES
+  (1, ''),
+  (2, NULL),
+  (3, 'hello')
+) t(id, val);
+
+statement ok
+COPY null_vs_empty TO '__TEST_DIR__/null_vs_empty.nsv' (FORMAT nsv);
+
+# Both empty string and NULL come back as NULL after roundtrip
+query II
+SELECT id, val IS NULL AS is_null FROM read_nsv('__TEST_DIR__/null_vs_empty.nsv');
+----
+1	true
+2	true
+3	false
+
+# ── Sample size boundary ──────────────────────────────────────────
+
+# DetectColumnType samples rows 1 through min(nrows, 1+1000) = rows 1..1001.
+# Create a file with 1002 data rows: first 1000 are integers, row 1001 is text.
+# Type should be BIGINT (only first 1000 data rows sampled).
+# Row 1001 will fail TryCastAs at scan time → becomes NULL (silent fallback).
+
+statement ok
+CREATE TABLE boundary_src(num VARCHAR);
+
+statement ok
+INSERT INTO boundary_src SELECT i::VARCHAR FROM range(1, 1001) t(i);
+
+statement ok
+INSERT INTO boundary_src VALUES ('not_a_number');
+
+statement ok
+INSERT INTO boundary_src VALUES ('42');
+
+statement ok
+COPY boundary_src TO '__TEST_DIR__/boundary.nsv' (FORMAT nsv);
+
+# Should be BIGINT (only first 1000 rows sampled, all integers)
+query I
+SELECT typeof(num) FROM read_nsv('__TEST_DIR__/boundary.nsv') LIMIT 1;
+----
+BIGINT
+
+# The "not_a_number" row (row 1001) fails TryCastAs at scan time → NULL
+query I
+SELECT num FROM read_nsv('__TEST_DIR__/boundary.nsv') WHERE num IS NULL;
+----
+NULL
+
+# Total row count should be 1002
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/boundary.nsv');
+----
+1002
+
+# Verify the last row (after the bad one) still works
+query I
+SELECT num FROM read_nsv('__TEST_DIR__/boundary.nsv') OFFSET 1001;
+----
+42
+
+# ── Large table roundtrip (no corruption) ──────────────────────────
+
+statement ok
+CREATE TABLE large_src AS SELECT i AS id, 'name_' || i::VARCHAR AS name, (i * 1.5)::DOUBLE AS value FROM range(1, 1001) t(i);
+
+statement ok
+COPY large_src TO '__TEST_DIR__/large.nsv' (FORMAT nsv);
+
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/large.nsv');
+----
+1000
+
+# Spot check first and last rows
+query ITR
+SELECT id, name, value FROM read_nsv('__TEST_DIR__/large.nsv') LIMIT 1;
+----
+1	name_1	1.5
+
+query ITR
+SELECT id, name, value FROM read_nsv('__TEST_DIR__/large.nsv') OFFSET 999;
+----
+1000	name_1000	1500.0
+
+# Aggregation check for integrity
+query R
+SELECT SUM(id) FROM read_nsv('__TEST_DIR__/large.nsv');
+----
+500500.0
+
+# ── Cleanup ────────────────────────────────────────────────────────
+
+statement ok
+DROP TABLE IF EXISTS multi_type;
+
+statement ok
+DROP TABLE IF EXISTS with_nulls;
+
+statement ok
+DROP TABLE IF EXISTS null_vs_empty;
+
+statement ok
+DROP TABLE IF EXISTS boundary_src;
+
+statement ok
+DROP TABLE IF EXISTS large_src;
