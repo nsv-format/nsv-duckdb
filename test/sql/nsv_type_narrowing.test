@@ -129,14 +129,20 @@ SELECT val FROM read_nsv('__TEST_DIR__/bool_one_zero.nsv');
 0
 1
 
-# yes/no → should NOT cast to BOOLEAN (DuckDB strict cast rejects these)
+# yes/no → DuckDB v1.4.2 strict cast ACCEPTS these as BOOLEAN
 statement ok
 COPY (SELECT * FROM (VALUES ('flag'),(''),('yes'),(''),('no'),(''))) TO '__TEST_DIR__/bool_yesno.nsv' (FORMAT CSV, HEADER false, QUOTE '');
 
 query I
 SELECT typeof(flag) FROM read_nsv('__TEST_DIR__/bool_yesno.nsv') LIMIT 1;
 ----
-VARCHAR
+BOOLEAN
+
+query I
+SELECT flag FROM read_nsv('__TEST_DIR__/bool_yesno.nsv');
+----
+true
+false
 
 # Mix of true/1 → VARCHAR (strict cast: "1"/"0" fail BOOLEAN, "true"/"false" fail BIGINT)
 statement ok
