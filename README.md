@@ -48,7 +48,7 @@ SF
 
 This extension integrates the Rust [nsv](https://crates.io/crates/nsv) parser with DuckDB via FFI:
 
-- **Rust layer** (`rust-ffi/`) - FFI wrapper around the [nsv](https://crates.io/crates/nsv) crate (v0.0.9)
+- **Rust layer** (`rust-ffi/`) - FFI wrapper around the [nsv](https://crates.io/crates/nsv) crate
 - **C++ layer** (`src/`) - DuckDB table function that calls the Rust FFI
 
 ## Building from Source
@@ -242,7 +242,7 @@ nsv-duckdb/
 │   └── include/                 # Headers
 ├── rust-ffi/                    # Rust FFI wrapper
 │   ├── src/lib.rs              # FFI interface
-│   └── Cargo.toml              # Depends on nsv 0.0.9 (crates.io)
+│   └── Cargo.toml              # Depends on nsv crate (crates.io)
 ├── test/sql/                   # DuckDB SQL tests
 ├── examples/                   # Example NSV files
 ├── duckdb/                     # DuckDB submodule
