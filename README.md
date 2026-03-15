@@ -272,10 +272,6 @@ The extension uses DuckDB's [extension-ci-tools](https://github.com/duckdb/exten
 
 See `.github/workflows/MainDistributionPipeline.yml` for the CI configuration.
 
-## License
-
-MIT — see [LICENSE](LICENSE).
-
 ## Links
 
 - [NSV Format Specification](https://github.com/nsv-format/nsv)
