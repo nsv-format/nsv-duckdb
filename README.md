@@ -3,7 +3,7 @@
 A [DuckDB](https://duckdb.org/) extension for reading and writing [NSV](https://nsv-format.org) files.
 
 NSV can be used as a simple tabular data format where each cell occupies its own line and rows are separated by blank lines.
-This extension treats the first row as column names.
+The extension follows CSV conventions (headers, type narrowing) to the extent DuckDB's CSV reader does.
 
 ## Quick Start
 
