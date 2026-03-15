@@ -48,9 +48,8 @@ SF
 
 This extension integrates the Rust [nsv](https://crates.io/crates/nsv) parser with DuckDB via FFI:
 
-- **Rust layer** (`rust-glue/`) - FFI wrapper around the vendored NSV parser
+- **Rust layer** (`rust-ffi/`) - FFI wrapper around the [nsv](https://crates.io/crates/nsv) crate (v0.0.9)
 - **C++ layer** (`src/`) - DuckDB table function that calls the Rust FFI
-- **Vendored parser** (`vendor/nsv-rust/`) - The upstream NSV Rust library
 
 ## Building from Source
 
@@ -96,8 +95,8 @@ make
 **macOS:**
 ```bash
 # If pre-built Linux libraries exist, remove them first
-rm -f rust-glue/target/release/libnsv_ffi.a
-rm -f rust-glue/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
+rm -f rust-ffi/target/release/libnsv_ffi.a
+rm -f rust-ffi/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
 
 # Build (will compile Rust for your platform)
 make
@@ -217,8 +216,8 @@ ld: archive member '/' not a mach-o file in '.../libnsv_ffi.a'
 
 **Solution:** Pre-built Linux libraries are incompatible with macOS. Remove them and rebuild:
 ```bash
-rm -f rust-glue/target/release/libnsv_ffi.a
-rm -f rust-glue/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
+rm -f rust-ffi/target/release/libnsv_ffi.a
+rm -f rust-ffi/target/x86_64-unknown-linux-musl/release/libnsv_ffi.a
 make clean
 make
 ```
@@ -241,11 +240,9 @@ nsv-duckdb/
 ├── src/                          # C++ extension code
 │   ├── nsv_extension.cpp        # Main table function
 │   └── include/                 # Headers
-├── rust-glue/                   # Rust FFI wrapper
+├── rust-ffi/                    # Rust FFI wrapper
 │   ├── src/lib.rs              # FFI interface
-│   ├── nsv.h                   # C header for FFI
-│   └── Cargo.toml              # Links to vendor/nsv-rust
-├── vendor/nsv-rust/            # Vendored NSV parser (git submodule)
+│   └── Cargo.toml              # Depends on nsv 0.0.9 (crates.io)
 ├── test/sql/                   # DuckDB SQL tests
 ├── examples/                   # Example NSV files
 ├── duckdb/                     # DuckDB submodule
@@ -256,8 +253,8 @@ nsv-duckdb/
 ### How the Build Works
 
 1. **Rust FFI library** is built first:
-   - `rust-glue/` compiles to a static library (`libnsv_ffi.a`)
-   - Uses the vendored NSV parser from `vendor/nsv-rust/`
+   - `rust-ffi/` compiles to a static library (`libnsv_ffi.a`)
+   - Depends on the `nsv` crate from crates.io
    - Exports C-compatible functions for parsing NSV
 
 2. **C++ extension** is built second:
@@ -277,10 +274,7 @@ See `.github/workflows/MainDistributionPipeline.yml` for the CI configuration.
 
 ## License
 
-This extension follows the licensing of its components:
-- NSV parser: MIT (see `vendor/nsv-rust/`)
-- DuckDB: MIT
-- This extension code: MIT
+MIT — see [LICENSE](LICENSE).
 
 ## Links
 
