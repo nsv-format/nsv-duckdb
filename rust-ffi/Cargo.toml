@@ -4,7 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-nsv = "0.0.9"
+nsv = "0.0.11"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [lib]
-crate-type = ["staticlib"]
+crate-type = ["staticlib", "lib"]
+
+[[bench]]
+name = "ffi_bench"
+harness = false
