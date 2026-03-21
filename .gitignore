@@ -8,3 +8,5 @@ rust-ffi/target/
 benchmarks/builds/
 benchmarks/data/
 cachegrind.out.*
+nsv-rust/
+cachegrind.out.*
