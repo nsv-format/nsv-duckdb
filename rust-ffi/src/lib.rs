@@ -269,9 +269,17 @@ enum CellRef {
 }
 
 pub struct ZeroCopyHandle {
-    input: Vec<u8>,
+    /// Raw pointer + length to the input buffer (owned by C++ NSVBindData).
+    /// SAFETY: The C++ side guarantees raw_buffer outlives the ZeroCopyHandle
+    /// (bind data outlives scan state in DuckDB's execution model).
+    input_ptr: *const u8,
     cells: Vec<Vec<CellRef>>,
 }
+
+// SAFETY: The raw pointer is only used for reading, and the C++ side
+// guarantees the buffer outlives the handle.
+unsafe impl Send for ZeroCopyHandle {}
+unsafe impl Sync for ZeroCopyHandle {}
 
 fn build_col_map(columns: &[usize]) -> (Vec<usize>, usize) {
     let max_col = columns.iter().copied().max().unwrap_or(0);
@@ -414,18 +422,21 @@ pub extern "C" fn nsv_decode_zerocopy(
     if ptr.is_null() || col_indices.is_null() || num_cols == 0 || skip_unescape_flags.is_null() {
         return std::ptr::null_mut();
     }
-    let input = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    // SAFETY: we borrow the input directly — the C++ side guarantees the
+    // raw_buffer (in NSVBindData) outlives the ZeroCopyHandle (in NSVScanState).
+    // No copy needed.
+    let input = unsafe { std::slice::from_raw_parts(ptr, len) };
     let columns = unsafe { std::slice::from_raw_parts(col_indices, num_cols) };
     let raw_flags = unsafe { std::slice::from_raw_parts(skip_unescape_flags, num_cols) };
     let skip: Vec<bool> = raw_flags.iter().map(|&f| f != 0).collect();
 
     let cells = if input.len() < PARALLEL_THRESHOLD {
-        decode_zerocopy_sequential(&input, 0, columns, &skip)
+        decode_zerocopy_sequential(input, 0, columns, &skip)
     } else {
-        decode_zerocopy_parallel(&input, columns, &skip)
+        decode_zerocopy_parallel(input, columns, &skip)
     };
 
-    Box::into_raw(Box::new(ZeroCopyHandle { input, cells }))
+    Box::into_raw(Box::new(ZeroCopyHandle { input_ptr: ptr, cells }))
 }
 
 #[no_mangle]
@@ -444,7 +455,8 @@ pub extern "C" fn nsv_zerocopy_cell(
         Some(cell) => {
             let (ptr, len) = match cell {
                 CellRef::Raw(offset, length) => {
-                    (h.input[*offset..].as_ptr(), *length)
+                    // SAFETY: offset is within the input buffer bounds
+                    (unsafe { h.input_ptr.add(*offset) }, *length)
                 }
                 CellRef::Unescaped(bytes) => {
                     (bytes.as_ptr(), bytes.len())
