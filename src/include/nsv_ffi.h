@@ -90,6 +90,35 @@ const char *nsv_zerocopy_cell(const ZeroCopyHandle *h, size_t row,
 
 void nsv_zerocopy_free(ZeroCopyHandle *h);
 
+/* ── Row index (lightweight scan) ─────────────────────────────────── */
+
+/* Opaque handle for a row index — just byte offsets for \n\n boundaries.
+ * All cell parsing is done on the C++ side. */
+typedef struct RowIndex RowIndex;
+
+/* Build a row index from the input buffer. The input must remain valid
+ * for the lifetime of the RowIndex (C++ bind data outlives scan state).
+ * Returns NULL on null input. */
+RowIndex *nsv_build_row_index(const uint8_t *ptr, size_t len);
+
+/* Number of rows in the row index. */
+size_t nsv_row_index_count(const RowIndex *h);
+
+/* Pointer to the offsets array (num_rows + 1 entries, last is sentinel).
+ * The array is owned by the RowIndex — do NOT free it. */
+const size_t *nsv_row_index_offsets(const RowIndex *h);
+
+/* Free a row index handle. */
+void nsv_row_index_free(RowIndex *h);
+
+/* Unescape a single NSV cell.
+ * Returns 1 if the data was borrowed (no unescape needed, *out_ptr points
+ * into the original buffer — do NOT free).
+ * Returns 0 if the data was owned (unescaped copy — free with nsv_free_buf).
+ * ptr/len is the raw cell bytes. out_ptr/out_len receive the result. */
+uint8_t nsv_unescape_cell(const uint8_t *ptr, size_t len,
+                           const uint8_t **out_ptr, size_t *out_len);
+
 /* ── Writing ─────────────────────────────────────────────────────── */
 
 /* Opaque encoder handle. */

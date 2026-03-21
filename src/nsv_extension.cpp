@@ -12,7 +12,12 @@
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
+#include "duckdb/common/operator/cast_operators.hpp"
+
 #include "nsv_ffi.h"
+
+#include <atomic>
+#include <cstring>
 
 namespace duckdb {
 
@@ -70,7 +75,7 @@ struct NSVBindData : public TableFunctionData {
   vector<LogicalType> types;
   //! Sample handle for header/type sniffing (first 1002 rows).
   SampleHandle *sample = nullptr;
-  //! Raw file bytes kept for zerocopy decode at scan init.
+  //! Raw file bytes — kept alive for inline parsing during scan.
   string raw_buffer;
   bool all_varchar = false;
 
@@ -81,18 +86,40 @@ struct NSVBindData : public TableFunctionData {
   }
 };
 
-struct NSVScanState : public GlobalTableFunctionState {
-  idx_t current_row = 0;
+struct NSVGlobalState : public GlobalTableFunctionState {
+  //! Row index: byte offsets for each \n\n boundary.
+  RowIndex *row_index = nullptr;
+  //! Pointer to the offsets array (owned by row_index).
+  const size_t *offsets = nullptr;
+  //! Total number of rows (including header at index 0).
+  idx_t total_rows = 0;
+  //! Atomic counter for parallel scan — next row to process.
+  //! Starts at 1 (row 0 is the header).
+  std::atomic<idx_t> next_row{1};
   //! Maps output column index → source column index.
   vector<column_t> column_ids;
-  //! Zero-copy handle — typed columns as raw slices, VARCHAR unescaped.
-  ZeroCopyHandle *zerocopy = nullptr;
 
-  ~NSVScanState() {
-    if (zerocopy) {
-      nsv_zerocopy_free(zerocopy);
+  idx_t MaxThreads() const override {
+    if (total_rows <= 1) {
+      return 1;
+    }
+    // One thread per STANDARD_VECTOR_SIZE rows.
+    idx_t data_rows = total_rows - 1; // exclude header
+    return (data_rows + STANDARD_VECTOR_SIZE - 1) / STANDARD_VECTOR_SIZE;
+  }
+
+  ~NSVGlobalState() {
+    if (row_index) {
+      nsv_row_index_free(row_index);
     }
   }
+};
+
+struct NSVLocalState : public LocalTableFunctionState {
+  //! Precomputed col_map: col_map[source_col] = output_col, or -1 if not projected.
+  vector<int32_t> col_map;
+  //! Max source column index we care about (skip parsing beyond this).
+  idx_t max_source_col = 0;
 };
 
 static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
@@ -115,7 +142,6 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
   fs.Read(*file_handle, (void *)result->raw_buffer.data(), file_size);
 
   // Sample decode: header + up to 1000 data rows for type sniffing.
-  // Full decode deferred to scan init (zero-copy).
   result->sample = nsv_decode_sample(
       reinterpret_cast<const uint8_t *>(result->raw_buffer.data()),
       result->raw_buffer.size(), 1002);
@@ -153,111 +179,234 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
 }
 
 static unique_ptr<GlobalTableFunctionState>
-NSVInit(ClientContext &ctx, TableFunctionInitInput &input) {
-  auto state = make_uniq<NSVScanState>();
+NSVInitGlobal(ClientContext &ctx, TableFunctionInitInput &input) {
+  auto state = make_uniq<NSVGlobalState>();
   state->column_ids = input.column_ids;
 
   auto &bind = input.bind_data->Cast<NSVBindData>();
 
-  if (!bind.raw_buffer.empty() && !state->column_ids.empty()) {
-    vector<size_t> col_indices;
-    col_indices.reserve(state->column_ids.size());
-    for (auto &cid : state->column_ids) {
-      col_indices.push_back(static_cast<size_t>(cid));
-    }
-
-    // Build skip_unescape flags: true for non-VARCHAR types.
-    vector<uint8_t> skip_flags(state->column_ids.size(), 0);
-    for (idx_t i = 0; i < state->column_ids.size(); i++) {
-      auto src_col = state->column_ids[i];
-      if (src_col < bind.types.size() &&
-          bind.types[src_col] != LogicalType::VARCHAR) {
-        skip_flags[i] = 1;
-      }
-    }
-
-    state->zerocopy = nsv_decode_zerocopy(
+  if (!bind.raw_buffer.empty()) {
+    state->row_index = nsv_build_row_index(
         reinterpret_cast<const uint8_t *>(bind.raw_buffer.data()),
-        bind.raw_buffer.size(), col_indices.data(), col_indices.size(),
-        skip_flags.data());
+        bind.raw_buffer.size());
+    if (state->row_index) {
+      state->total_rows = nsv_row_index_count(state->row_index);
+      state->offsets = nsv_row_index_offsets(state->row_index);
+    }
   }
 
   return std::move(state);
 }
 
-// ── Scan ─────────────────────────────────────────────────────────────
+static unique_ptr<LocalTableFunctionState>
+NSVInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
+             GlobalTableFunctionState *global_state) {
+  auto state = make_uniq<NSVLocalState>();
+  auto &gstate = global_state->Cast<NSVGlobalState>();
+  auto &bind = input.bind_data->Cast<NSVBindData>();
+  idx_t ncols = bind.names.size();
+
+  // Build col_map: source_col → output_col (or -1)
+  state->col_map.resize(ncols, -1);
+  state->max_source_col = 0;
+  for (idx_t out_col = 0; out_col < gstate.column_ids.size(); out_col++) {
+    auto src_col = gstate.column_ids[out_col];
+    if (src_col < ncols) {
+      state->col_map[src_col] = static_cast<int32_t>(out_col);
+      if (src_col > state->max_source_col) {
+        state->max_source_col = src_col;
+      }
+    }
+  }
+
+  return std::move(state);
+}
+
+// ── Inline NSV cell parsing ──────────────────────────────────────────
+//
+// Parse cells directly from raw bytes. No Rust FFI calls per cell.
+// For VARCHAR: check for backslash via memchr — skip unescape if clean.
+// For typed: raw bytes are valid for casting (no escapes possible).
+
+/// Unescape an NSV cell entirely in C++.
+/// Returns (ptr, len) of the unescaped data.
+/// If no backslash found, returns the original (ptr, len) — zero-copy.
+static inline std::pair<const char *, size_t>
+UnescapeCell(const uint8_t *cell_ptr, size_t cell_len,
+             vector<char> &unescape_buf) {
+  // Fast path: scan for backslash
+  const void *bs = memchr(cell_ptr, '\\', cell_len);
+  if (!bs) {
+    // No backslash — cell is clean, return raw pointer.
+    return {reinterpret_cast<const char *>(cell_ptr), cell_len};
+  }
+
+  // Slow path: unescape in C++ (left-to-right character consumption).
+  unescape_buf.clear();
+  unescape_buf.reserve(cell_len);
+  for (size_t i = 0; i < cell_len; i++) {
+    if (cell_ptr[i] == '\\' && i + 1 < cell_len) {
+      uint8_t next = cell_ptr[i + 1];
+      if (next == 'n') {
+        unescape_buf.push_back('\n');
+      } else if (next == '\\') {
+        unescape_buf.push_back('\\');
+      } else {
+        // Unrecognized escape: pass through with backslash
+        unescape_buf.push_back('\\');
+        unescape_buf.push_back(static_cast<char>(next));
+      }
+      i++; // consume the next char
+    } else {
+      unescape_buf.push_back(static_cast<char>(cell_ptr[i]));
+    }
+  }
+  return {unescape_buf.data(), unescape_buf.size()};
+}
 
 static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
                     DataChunk &output) {
   auto &bind = input.bind_data->Cast<NSVBindData>();
-  auto &state = input.global_state->Cast<NSVScanState>();
+  auto &gstate = input.global_state->Cast<NSVGlobalState>();
+  auto &lstate = input.local_state->Cast<NSVLocalState>();
 
-  if (state.current_row == 0) {
-    state.current_row = 1;
-  }
-
-  if (!state.zerocopy) {
+  if (!gstate.row_index || gstate.total_rows <= 1) {
     output.SetCardinality(0);
     return;
   }
 
-  idx_t total_rows = nsv_zerocopy_row_count(state.zerocopy);
+  // Atomically grab a range of rows.
+  idx_t start_row =
+      gstate.next_row.fetch_add(STANDARD_VECTOR_SIZE, std::memory_order_relaxed);
+  if (start_row >= gstate.total_rows) {
+    output.SetCardinality(0);
+    return;
+  }
+
   idx_t count =
-      MinValue<idx_t>(STANDARD_VECTOR_SIZE, total_rows - state.current_row);
-  if (count == 0) {
-    output.SetCardinality(0);
-    return;
-  }
+      MinValue<idx_t>(STANDARD_VECTOR_SIZE, gstate.total_rows - start_row);
 
-  for (idx_t out_col = 0; out_col < output.ColumnCount(); out_col++) {
-    idx_t src_col = state.column_ids[out_col];
-    auto &vec = output.data[out_col];
-    const auto &target_type = bind.types[src_col];
+  const auto *offsets = gstate.offsets;
+  const auto *raw =
+      reinterpret_cast<const uint8_t *>(bind.raw_buffer.data());
 
-    if (target_type == LogicalType::VARCHAR) {
-      // VARCHAR: write strings directly into the output vector.
-      auto str_data = FlatVector::GetData<string_t>(vec);
-      auto &validity = FlatVector::Validity(vec);
+  // Per-thread unescape buffer
+  vector<char> unescape_buf;
 
-      for (idx_t i = 0; i < count; i++) {
-        idx_t row_idx = state.current_row + i;
-        size_t cell_len = 0;
-        const char *cell =
-            nsv_zerocopy_cell(state.zerocopy, row_idx, out_col, &cell_len);
+  // Parse each row inline, writing directly into output vectors.
+  // Typed columns use per-cell TryCast::Operation — no temp vectors.
+  for (idx_t i = 0; i < count; i++) {
+    idx_t row_idx = start_row + i;
+    size_t row_start = offsets[row_idx];
+    size_t row_end = offsets[row_idx + 1];
+    // row_end is start of next row (after \n\n) or sentinel (end of input).
+    // Trim the \n\n separator to get actual row content.
+    if (row_idx + 1 < gstate.total_rows) {
+      row_end -= 2;
+    }
 
-        if (!cell || cell_len == 0) {
-          validity.SetInvalid(i);
-        } else {
-          str_data[i] = StringVector::AddString(vec, cell, cell_len);
-        }
+    // Parse cells from raw bytes
+    idx_t col_idx = 0;
+    size_t pos = row_start;
+
+    while (pos < row_end) {
+      size_t cell_start = pos;
+      while (pos < row_end && raw[pos] != '\n') {
+        pos++;
       }
-    } else {
-      // Typed columns: populate a temporary VARCHAR vector, then batch-cast.
-      Vector str_vec(LogicalType::VARCHAR, count);
-      auto str_data = FlatVector::GetData<string_t>(str_vec);
-      auto &str_validity = FlatVector::Validity(str_vec);
-
-      for (idx_t i = 0; i < count; i++) {
-        idx_t row_idx = state.current_row + i;
-        size_t cell_len = 0;
-        const char *cell =
-            nsv_zerocopy_cell(state.zerocopy, row_idx, out_col, &cell_len);
-
-        if (!cell || cell_len == 0) {
-          str_validity.SetInvalid(i);
-        } else {
-          str_data[i] = StringVector::AddString(str_vec, cell, cell_len);
-        }
+      size_t cell_len = pos - cell_start;
+      if (pos < row_end) {
+        pos++; // skip \n cell delimiter
       }
 
-      // Batch-cast the whole column at once.
-      string error_msg;
-      VectorOperations::TryCast(ctx, str_vec, vec, count, &error_msg, false);
+      // Check if this column is projected
+      if (col_idx < lstate.col_map.size()) {
+        int32_t out_col = lstate.col_map[col_idx];
+        if (out_col >= 0) {
+          auto src_col = gstate.column_ids[out_col];
+          const auto &target_type = bind.types[src_col];
+          auto &vec = output.data[out_col];
+
+          if (cell_len == 0) {
+            FlatVector::Validity(vec).SetInvalid(i);
+          } else if (target_type == LogicalType::VARCHAR) {
+            // VARCHAR: unescape if needed, write directly.
+            auto [ptr, len] =
+                UnescapeCell(raw + cell_start, cell_len, unescape_buf);
+            FlatVector::GetData<string_t>(vec)[i] =
+                StringVector::AddString(vec, ptr, len);
+          } else {
+            // Typed column: construct string_t from raw bytes and cast
+            // directly into the output vector. No temp vector, no batch.
+            string_t str_val(reinterpret_cast<const char *>(raw + cell_start),
+                             static_cast<uint32_t>(cell_len));
+
+            if (target_type == LogicalType::BIGINT) {
+              int64_t result;
+              if (TryCast::Operation(str_val, result, false)) {
+                FlatVector::GetData<int64_t>(vec)[i] = result;
+              } else {
+                FlatVector::Validity(vec).SetInvalid(i);
+              }
+            } else if (target_type == LogicalType::DOUBLE) {
+              double result;
+              if (TryCast::Operation(str_val, result, false)) {
+                FlatVector::GetData<double>(vec)[i] = result;
+              } else {
+                FlatVector::Validity(vec).SetInvalid(i);
+              }
+            } else if (target_type == LogicalType::BOOLEAN) {
+              bool result;
+              if (TryCast::Operation(str_val, result, false)) {
+                FlatVector::GetData<bool>(vec)[i] = result;
+              } else {
+                FlatVector::Validity(vec).SetInvalid(i);
+              }
+            } else if (target_type == LogicalType::DATE) {
+              date_t result;
+              if (TryCast::Operation(str_val, result, false)) {
+                FlatVector::GetData<date_t>(vec)[i] = result;
+              } else {
+                FlatVector::Validity(vec).SetInvalid(i);
+              }
+            } else if (target_type == LogicalType::TIMESTAMP) {
+              timestamp_t result;
+              if (TryCast::Operation(str_val, result, false)) {
+                FlatVector::GetData<timestamp_t>(vec)[i] = result;
+              } else {
+                FlatVector::Validity(vec).SetInvalid(i);
+              }
+            } else {
+              // Fallback: use Value-based cast
+              Value str_v(string(reinterpret_cast<const char *>(raw + cell_start), cell_len));
+              Value result_v;
+              string error_msg;
+              if (str_v.TryCastAs(ctx, target_type, result_v, &error_msg, false)) {
+                vec.SetValue(i, result_v);
+              } else {
+                FlatVector::Validity(vec).SetInvalid(i);
+              }
+            }
+          }
+        }
+      }
+
+      col_idx++;
+      if (col_idx > lstate.max_source_col) {
+        break; // No more projected columns — skip rest of row
+      }
+    }
+
+    // Any remaining projected columns beyond the row's cells are NULL
+    for (idx_t out_col = 0; out_col < gstate.column_ids.size(); out_col++) {
+      auto src_col = gstate.column_ids[out_col];
+      if (src_col >= col_idx) {
+        FlatVector::Validity(output.data[out_col]).SetInvalid(i);
+      }
     }
   }
 
   output.SetCardinality(count);
-  state.current_row += count;
 }
 
 // ── write_nsv (COPY TO) ────────────────────────────────────────────
@@ -381,12 +530,15 @@ static void NSVWriteFinalize(ClientContext &ctx, FunctionData &,
 // ── Extension registration ──────────────────────────────────────────
 
 static void LoadInternal(ExtensionLoader &loader) {
+  // read_nsv table function with parallel scan + projection pushdown
   TableFunction read_nsv("read_nsv", {LogicalType::VARCHAR}, NSVScan, NSVBind);
-  read_nsv.init_global = NSVInit;
+  read_nsv.init_global = NSVInitGlobal;
+  read_nsv.init_local = NSVInitLocal;
   read_nsv.named_parameters["all_varchar"] = LogicalType::BOOLEAN;
   read_nsv.projection_pushdown = true;
   loader.RegisterFunction(read_nsv);
 
+  // COPY TO ... (FORMAT nsv)
   CopyFunction nsv_copy("nsv");
   nsv_copy.copy_to_bind = NSVWriteBind;
   nsv_copy.copy_to_initialize_global = NSVWriteInitGlobal;

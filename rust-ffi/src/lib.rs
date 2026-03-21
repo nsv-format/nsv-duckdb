@@ -474,6 +474,123 @@ pub extern "C" fn nsv_zerocopy_free(handle: *mut ZeroCopyHandle) {
     if !handle.is_null() { unsafe { drop(Box::from_raw(handle)) }; }
 }
 
+// ── Row index (lightweight alternative to zerocopy) ─────────────────
+//
+// Just scans for \n\n boundaries and returns byte offsets.
+// All cell parsing is done on the C++ side, enabling:
+// - Multi-threaded scan (DuckDB thread pool)
+// - No per-cell FFI calls
+// - Direct FlatVector writes
+
+pub struct RowIndex {
+    /// Byte offsets: row_offsets[i] is the start of row i in the input buffer.
+    /// row_offsets[num_rows] is a sentinel (end of input or past last row).
+    offsets: Vec<usize>,
+}
+
+/// Build a row index: scan for \n\n boundaries, return byte offsets.
+///
+/// The input buffer is NOT copied — it must remain valid (C++ bind data
+/// outlives scan state). Returns a RowIndex where offsets[i] is the start
+/// of row i, and offsets[num_rows] is a sentinel past the last row.
+///
+/// Uses memchr for fast \n\n scanning.
+#[no_mangle]
+pub extern "C" fn nsv_build_row_index(
+    ptr: *const u8,
+    len: usize,
+) -> *mut RowIndex {
+    if ptr.is_null() || len == 0 {
+        return std::ptr::null_mut();
+    }
+    let input = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let finder = memmem::Finder::new(b"\n\n");
+
+    let mut offsets = Vec::new();
+    offsets.push(0usize); // first row starts at 0
+
+    let mut search_start = 0;
+    while search_start < input.len() {
+        if let Some(pos) = finder.find(&input[search_start..]) {
+            let abs_pos = search_start + pos;
+            // \n\n at abs_pos means row boundary. Next row starts at abs_pos + 2.
+            let next_row = abs_pos + 2;
+            if next_row < input.len() {
+                offsets.push(next_row);
+            }
+            search_start = next_row;
+        } else {
+            break;
+        }
+    }
+
+    // Sentinel: end of input
+    offsets.push(input.len());
+
+    Box::into_raw(Box::new(RowIndex { offsets }))
+}
+
+/// Number of rows in the row index.
+#[no_mangle]
+pub extern "C" fn nsv_row_index_count(handle: *const RowIndex) -> usize {
+    if handle.is_null() { return 0; }
+    let h = unsafe { &*handle };
+    // offsets has num_rows + 1 entries (including sentinel)
+    if h.offsets.is_empty() { 0 } else { h.offsets.len() - 1 }
+}
+
+/// Get the byte offset array. Returns a pointer to num_rows+1 entries.
+/// The caller must NOT free this pointer — it's owned by the RowIndex.
+#[no_mangle]
+pub extern "C" fn nsv_row_index_offsets(handle: *const RowIndex) -> *const usize {
+    if handle.is_null() { return std::ptr::null(); }
+    let h = unsafe { &*handle };
+    h.offsets.as_ptr()
+}
+
+/// Free a RowIndex handle.
+#[no_mangle]
+pub extern "C" fn nsv_row_index_free(handle: *mut RowIndex) {
+    if !handle.is_null() { unsafe { drop(Box::from_raw(handle)) }; }
+}
+
+/// Unescape a single NSV cell. Caller must free with nsv_free_buf.
+/// Returns the unescaped bytes via out_ptr/out_len. If no escaping was
+/// needed, out_ptr points to the original data (no allocation).
+/// Returns 1 if the data was borrowed (no free needed), 0 if owned (must free).
+#[no_mangle]
+pub extern "C" fn nsv_unescape_cell(
+    ptr: *const u8,
+    len: usize,
+    out_ptr: *mut *const u8,
+    out_len: *mut usize,
+) -> u8 {
+    if ptr.is_null() || out_ptr.is_null() || out_len.is_null() {
+        return 1;
+    }
+    let input = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let result = nsv::unescape_bytes(input);
+    match result {
+        Cow::Borrowed(b) => {
+            unsafe {
+                *out_ptr = b.as_ptr();
+                *out_len = b.len();
+            }
+            1 // borrowed — no free needed
+        }
+        Cow::Owned(v) => {
+            let len = v.len();
+            let boxed = v.into_boxed_slice();
+            let ptr = Box::into_raw(boxed) as *const u8;
+            unsafe {
+                *out_ptr = ptr;
+                *out_len = len;
+            }
+            0 // owned — caller must free with nsv_free_buf
+        }
+    }
+}
+
 /// Encode a seqseq (built cell-by-cell from C) into an NSV byte buffer.
 ///
 /// Usage from C:
