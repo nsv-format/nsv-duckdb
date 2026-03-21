@@ -5,3 +5,5 @@ build/
 
 # Rust build artifacts
 rust-ffi/target/
+benchmarks/builds/
+benchmarks/data/
