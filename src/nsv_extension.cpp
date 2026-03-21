@@ -503,8 +503,8 @@ static void WriteCells(const uint8_t *raw, idx_t count, idx_t num_out_cols, cons
 						str_data[i] =
 						    string_t(reinterpret_cast<const char *>(raw + cp.start), static_cast<uint32_t>(cp.len));
 					} else {
-						auto [ptr, len] = UnescapeCell(raw + cp.start, cp.len, unescape_buf);
-						str_data[i] = StringVector::AddString(vec, ptr, len);
+						auto unescaped = UnescapeCell(raw + cp.start, cp.len, unescape_buf);
+						str_data[i] = StringVector::AddString(vec, unescaped.first, unescaped.second);
 					}
 				}
 			}
