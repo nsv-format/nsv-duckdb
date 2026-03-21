@@ -142,3 +142,132 @@ query I
 SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/types.nsv') WHERE active = false;
 ----
 1
+
+# ── Filter pushdown ──────────────────────────────────────────────────
+
+# Create a larger dataset for filter testing
+statement ok
+COPY (SELECT * FROM (VALUES ('id'),('name'),('age'),('city'),('score'),(''),('1'),('Alice'),('30'),('NYC'),('85.5'),(''),('2'),('Bob'),('25'),('London'),('92.0'),(''),('3'),('Carol'),('35'),('NYC'),('78.3'),(''),('4'),('Dave'),('28'),('Paris'),('95.1'),(''),('5'),('Eve'),('30'),('London'),('88.7'),(''))) TO '__TEST_DIR__/filter.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+# Equality filter
+query TI
+SELECT name, age FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE age = 30;
+----
+Alice	30
+Eve	30
+
+# Greater-than filter
+query TI
+SELECT name, age FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE age > 28;
+----
+Alice	30
+Carol	35
+Eve	30
+
+# Less-than filter
+query TI
+SELECT name, age FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE age < 28;
+----
+Bob	25
+
+# Greater-or-equal filter
+query TI
+SELECT name, age FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE age >= 30;
+----
+Alice	30
+Carol	35
+Eve	30
+
+# Less-or-equal filter
+query TI
+SELECT name, age FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE age <= 25;
+----
+Bob	25
+
+# Range filter (AND of two comparisons on same column)
+query TI
+SELECT name, age FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE age >= 28 AND age <= 30;
+----
+Alice	30
+Dave	28
+Eve	30
+
+# VARCHAR equality filter
+query TI
+SELECT name, age FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE city = 'NYC';
+----
+Alice	30
+Carol	35
+
+# DOUBLE comparison filter
+query TR
+SELECT name, score FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE score > 90.0;
+----
+Bob	92.0
+Dave	95.1
+
+# IN filter
+query TI
+SELECT name, age FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE city IN ('NYC', 'Paris');
+----
+Alice	30
+Carol	35
+Dave	28
+
+# Filter on column not in SELECT (filter-only column)
+query T
+SELECT name FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE age > 30;
+----
+Carol
+
+# Filter + projection combined
+query R
+SELECT score FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE city = 'London' AND age < 30;
+----
+92.0
+
+# Multiple filters on different columns
+query T
+SELECT name FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE age >= 28 AND city = 'London';
+----
+Eve
+
+# Count with filter pushdown
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE age > 25;
+----
+4
+
+# Aggregation with filter pushdown
+query R
+SELECT AVG(score) FROM read_nsv('__TEST_DIR__/filter.nsv') WHERE city = 'NYC';
+----
+81.9
+
+# ── Filter pushdown: NULL handling ───────────────────────────────────
+
+# Create a file with some NULL cells using COPY TO nsv
+statement ok
+CREATE TABLE nulls_src(key VARCHAR, val BIGINT);
+
+statement ok
+INSERT INTO nulls_src VALUES ('a', 10), ('b', NULL), ('c', 30);
+
+statement ok
+COPY nulls_src TO '__TEST_DIR__/nulls.nsv' (FORMAT nsv);
+
+statement ok
+DROP TABLE nulls_src;
+
+# IS NOT NULL filter
+query TI
+SELECT key, val FROM read_nsv('__TEST_DIR__/nulls.nsv') WHERE val IS NOT NULL;
+----
+a	10
+c	30
+
+# IS NULL filter
+query T
+SELECT key FROM read_nsv('__TEST_DIR__/nulls.nsv') WHERE val IS NULL;
+----
+b

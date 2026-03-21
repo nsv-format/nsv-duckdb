@@ -10,6 +10,12 @@
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
+#include "duckdb/planner/table_filter.hpp"
+#include "duckdb/planner/filter/constant_filter.hpp"
+#include "duckdb/planner/filter/conjunction_filter.hpp"
+#include "duckdb/planner/filter/null_filter.hpp"
+#include "duckdb/planner/filter/in_filter.hpp"
+
 #include "nsv_ffi.h"
 
 namespace duckdb {
@@ -80,10 +86,19 @@ struct NSVBindData : public TableFunctionData {
 
 struct NSVScanState : public GlobalTableFunctionState {
   idx_t current_row = 0;
-  //! Maps output column index → source column index (from projection pushdown).
+  //! Maps scanned column index → source column index (from projection pushdown).
+  //! When filter pushdown adds extra columns, this includes both output and
+  //! filter-only columns.
   vector<column_t> column_ids;
+  //! Maps output column position → index into column_ids.
+  //! Empty when there are no filter-only columns (i.e. all scanned columns
+  //! appear in the output).
+  vector<idx_t> projection_ids;
   //! Projected handle — pre-decoded, only requested columns.
   ProjectedNsvHandle *projected = nullptr;
+  //! Pushed-down filters. Keys are indices into column_ids (not source column
+  //! indices) — DuckDB remaps them in CreateTableFilterSet.
+  unique_ptr<TableFilterSet> filters;
 
   ~NSVScanState() {
     if (projected) {
@@ -156,6 +171,12 @@ static unique_ptr<GlobalTableFunctionState>
 NSVInit(ClientContext &ctx, TableFunctionInitInput &input) {
   auto state = make_uniq<NSVScanState>();
   state->column_ids = input.column_ids;
+  state->projection_ids = input.projection_ids;
+
+  // Capture pushed-down filters (if any).
+  if (input.filters) {
+    state->filters = input.filters->Copy();
+  }
 
   // Only use projected decode when a strict subset of columns is requested.
   // SELECT * populates column_ids with all columns, so re-decoding would
@@ -178,6 +199,99 @@ NSVInit(ClientContext &ctx, TableFunctionInitInput &input) {
   return std::move(state);
 }
 
+// ── Filter evaluation ────────────────────────────────────────────────
+
+//! Evaluate a single TableFilter against a (possibly NULL) Value.
+//! Returns true if the row passes (should be emitted).
+static bool EvaluateFilter(const TableFilter &filter, const Value &val) {
+  switch (filter.filter_type) {
+  case TableFilterType::IS_NULL:
+    return val.IsNull();
+  case TableFilterType::IS_NOT_NULL:
+    return !val.IsNull();
+  case TableFilterType::CONSTANT_COMPARISON: {
+    if (val.IsNull()) {
+      return false;
+    }
+    auto &const_filter = filter.Cast<ConstantFilter>();
+    return const_filter.Compare(val);
+  }
+  case TableFilterType::IN_FILTER: {
+    if (val.IsNull()) {
+      return false;
+    }
+    auto &in_filter = filter.Cast<InFilter>();
+    for (auto &candidate : in_filter.values) {
+      if (Value::NotDistinctFrom(val, candidate)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  case TableFilterType::CONJUNCTION_AND: {
+    auto &conj = filter.Cast<ConjunctionAndFilter>();
+    for (auto &child : conj.child_filters) {
+      if (!EvaluateFilter(*child, val)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  case TableFilterType::CONJUNCTION_OR: {
+    auto &conj = filter.Cast<ConjunctionOrFilter>();
+    for (auto &child : conj.child_filters) {
+      if (EvaluateFilter(*child, val)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  default:
+    // Unsupported filter type — conservatively pass the row through.
+    return true;
+  }
+}
+
+// ── Scan ─────────────────────────────────────────────────────────────
+
+//! Read a cell from either the projected or full handle, cast it to the target
+//! type, and return the resulting Value (NULL on empty/missing/cast failure).
+static Value ReadAndCastCell(ClientContext &ctx, const NSVBindData &bind,
+                             const NSVScanState &state, idx_t row_idx,
+                             idx_t scan_col) {
+  bool use_projected = (state.projected != nullptr);
+  idx_t src_col = state.column_ids[scan_col];
+  const auto &target_type = bind.types[src_col];
+
+  size_t cell_len = 0;
+  const char *cell;
+
+  if (use_projected) {
+    cell = nsv_projected_cell(state.projected, row_idx, scan_col, &cell_len);
+  } else {
+    if (src_col >= nsv_col_count(bind.handle, row_idx)) {
+      return Value();
+    }
+    cell = nsv_cell(bind.handle, row_idx, src_col, &cell_len);
+  }
+
+  if (!cell || cell_len == 0) {
+    return Value();
+  }
+
+  Value str_val(string(cell, cell_len));
+  if (target_type == LogicalType::VARCHAR) {
+    return str_val;
+  }
+
+  Value result_val;
+  string error_msg;
+  if (str_val.TryCastAs(ctx, target_type, result_val, &error_msg, false)) {
+    return result_val;
+  }
+  return Value();
+}
+
 static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
                     DataChunk &output) {
   auto &bind = input.bind_data->Cast<NSVBindData>();
@@ -188,63 +302,65 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     state.current_row = 1;
   }
 
-  // Use projected handle if available, otherwise fall back to eager handle.
   bool use_projected = (state.projected != nullptr);
   idx_t total_rows = use_projected ? nsv_projected_row_count(state.projected)
                                    : nsv_row_count(bind.handle);
-  idx_t count =
-      MinValue<idx_t>(STANDARD_VECTOR_SIZE, total_rows - state.current_row);
-  if (count == 0) {
-    output.SetCardinality(0);
-    return;
-  }
 
-  for (idx_t out_col = 0; out_col < output.ColumnCount(); out_col++) {
-    idx_t src_col = state.column_ids[out_col];
-    auto &vec = output.data[out_col];
-    const auto &target_type = bind.types[src_col];
+  bool has_filters =
+      state.filters && !state.filters->filters.empty();
 
-    for (idx_t i = 0; i < count; i++) {
-      idx_t row_idx = state.current_row + i;
+  // Determine how many of the scanned columns go to output.
+  // When projection_ids is non-empty, only those columns are output;
+  // the rest are filter-only columns that we scan but don't emit.
+  idx_t output_col_count = output.ColumnCount();
 
-      size_t cell_len = 0;
-      const char *cell;
+  idx_t emitted = 0;
+  while (emitted < STANDARD_VECTOR_SIZE && state.current_row < total_rows) {
+    idx_t row_idx = state.current_row++;
 
-      if (use_projected) {
-        // proj_col = out_col (projected handle stores columns in output order)
-        cell = nsv_projected_cell(state.projected, row_idx, out_col, &cell_len);
-      } else {
-        // Fallback: direct access by source column
-        if (src_col >= nsv_col_count(bind.handle, row_idx)) {
-          vec.SetValue(i, Value());
-          continue;
-        }
-        cell = nsv_cell(bind.handle, row_idx, src_col, &cell_len);
+    // Fast path: no filters — read and emit directly.
+    if (!has_filters) {
+      for (idx_t out_col = 0; out_col < output_col_count; out_col++) {
+        // Map output column to scanned column index.
+        idx_t scan_col = state.projection_ids.empty()
+                             ? out_col
+                             : state.projection_ids[out_col];
+        output.data[out_col].SetValue(
+            emitted, ReadAndCastCell(ctx, bind, state, row_idx, scan_col));
       }
+      emitted++;
+      continue;
+    }
 
-      if (!cell || cell_len == 0) {
-        vec.SetValue(i, Value());
-        continue;
-      }
+    // Evaluate filters. Filter keys are indices into column_ids (not source
+    // column indices) — this is how DuckDB's CreateTableFilterSet remaps them.
+    bool passes = true;
+    for (auto &filter_entry : state.filters->filters) {
+      idx_t scan_col = filter_entry.first;
 
-      Value str_val(string(cell, cell_len));
-      if (target_type == LogicalType::VARCHAR) {
-        vec.SetValue(i, str_val);
-      } else {
-        Value result_val;
-        string error_msg;
-        if (str_val.TryCastAs(ctx, target_type, result_val, &error_msg,
-                              false)) {
-          vec.SetValue(i, result_val);
-        } else {
-          vec.SetValue(i, Value());
-        }
+      Value val = ReadAndCastCell(ctx, bind, state, row_idx, scan_col);
+      if (!EvaluateFilter(*filter_entry.second, val)) {
+        passes = false;
+        break;
       }
     }
+
+    if (!passes) {
+      continue;
+    }
+
+    // Row passes filters — emit to output.
+    for (idx_t out_col = 0; out_col < output_col_count; out_col++) {
+      idx_t scan_col = state.projection_ids.empty()
+                           ? out_col
+                           : state.projection_ids[out_col];
+      output.data[out_col].SetValue(
+          emitted, ReadAndCastCell(ctx, bind, state, row_idx, scan_col));
+    }
+    emitted++;
   }
 
-  output.SetCardinality(count);
-  state.current_row += count;
+  output.SetCardinality(emitted);
 }
 
 // ── write_nsv (COPY TO) ────────────────────────────────────────────
@@ -372,11 +488,12 @@ static void NSVWriteFinalize(ClientContext &ctx, FunctionData &,
 // ── Extension registration ──────────────────────────────────────────
 
 static void LoadInternal(ExtensionLoader &loader) {
-  // read_nsv table function with projection pushdown
+  // read_nsv table function with projection + filter pushdown
   TableFunction read_nsv("read_nsv", {LogicalType::VARCHAR}, NSVScan, NSVBind);
   read_nsv.init_global = NSVInit;
   read_nsv.named_parameters["all_varchar"] = LogicalType::BOOLEAN;
   read_nsv.projection_pushdown = true;
+  read_nsv.filter_pushdown = true;
   loader.RegisterFunction(read_nsv);
 
   // COPY TO ... (FORMAT nsv)
