@@ -5,8 +5,6 @@ build/
 
 # Rust build artifacts
 rust-ffi/target/
-benchmarks/builds/
+
+# Benchmark generated data
 benchmarks/data/
-cachegrind.out.*
-nsv-rust/
-cachegrind.out.*
