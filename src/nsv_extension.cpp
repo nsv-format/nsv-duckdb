@@ -5,6 +5,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/common/types/vector.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/function/copy_function.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
@@ -204,42 +206,65 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     auto &vec = output.data[out_col];
     const auto &target_type = bind.types[src_col];
 
-    for (idx_t i = 0; i < count; i++) {
-      idx_t row_idx = state.current_row + i;
+    if (target_type == LogicalType::VARCHAR) {
+      // VARCHAR columns: write strings directly into the output vector.
+      auto str_data = FlatVector::GetData<string_t>(vec);
+      auto &validity = FlatVector::Validity(vec);
 
-      size_t cell_len = 0;
-      const char *cell;
+      for (idx_t i = 0; i < count; i++) {
+        idx_t row_idx = state.current_row + i;
+        size_t cell_len = 0;
+        const char *cell;
 
-      if (use_projected) {
-        // proj_col = out_col (projected handle stores columns in output order)
-        cell = nsv_projected_cell(state.projected, row_idx, out_col, &cell_len);
-      } else {
-        // Fallback: direct access by source column
-        if (src_col >= nsv_col_count(bind.handle, row_idx)) {
-          vec.SetValue(i, Value());
-          continue;
-        }
-        cell = nsv_cell(bind.handle, row_idx, src_col, &cell_len);
-      }
-
-      if (!cell || cell_len == 0) {
-        vec.SetValue(i, Value());
-        continue;
-      }
-
-      Value str_val(string(cell, cell_len));
-      if (target_type == LogicalType::VARCHAR) {
-        vec.SetValue(i, str_val);
-      } else {
-        Value result_val;
-        string error_msg;
-        if (str_val.TryCastAs(ctx, target_type, result_val, &error_msg,
-                              false)) {
-          vec.SetValue(i, result_val);
+        if (use_projected) {
+          cell =
+              nsv_projected_cell(state.projected, row_idx, out_col, &cell_len);
         } else {
-          vec.SetValue(i, Value());
+          if (src_col >= nsv_col_count(bind.handle, row_idx)) {
+            validity.SetInvalid(i);
+            continue;
+          }
+          cell = nsv_cell(bind.handle, row_idx, src_col, &cell_len);
+        }
+
+        if (!cell || cell_len == 0) {
+          validity.SetInvalid(i);
+        } else {
+          str_data[i] = StringVector::AddString(vec, cell, cell_len);
         }
       }
+    } else {
+      // Typed columns: populate a temporary VARCHAR vector, then batch-cast.
+      Vector str_vec(LogicalType::VARCHAR, count);
+      auto str_data = FlatVector::GetData<string_t>(str_vec);
+      auto &str_validity = FlatVector::Validity(str_vec);
+
+      for (idx_t i = 0; i < count; i++) {
+        idx_t row_idx = state.current_row + i;
+        size_t cell_len = 0;
+        const char *cell;
+
+        if (use_projected) {
+          cell =
+              nsv_projected_cell(state.projected, row_idx, out_col, &cell_len);
+        } else {
+          if (src_col >= nsv_col_count(bind.handle, row_idx)) {
+            str_validity.SetInvalid(i);
+            continue;
+          }
+          cell = nsv_cell(bind.handle, row_idx, src_col, &cell_len);
+        }
+
+        if (!cell || cell_len == 0) {
+          str_validity.SetInvalid(i);
+        } else {
+          str_data[i] = StringVector::AddString(str_vec, cell, cell_len);
+        }
+      }
+
+      // Batch-cast the whole column at once.
+      string error_msg;
+      VectorOperations::TryCast(ctx, str_vec, vec, count, &error_msg, false);
     }
   }
 
