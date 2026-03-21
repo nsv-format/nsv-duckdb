@@ -493,6 +493,7 @@ static void LoadInternal(ExtensionLoader &loader) {
   read_nsv.named_parameters["all_varchar"] = LogicalType::BOOLEAN;
   read_nsv.projection_pushdown = true;
   read_nsv.filter_pushdown = true;
+  read_nsv.filter_prune = true;
   loader.RegisterFunction(read_nsv);
 
   // COPY TO ... (FORMAT nsv)
