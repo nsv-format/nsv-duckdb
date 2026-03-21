@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-nsv = "0.0.9"
+nsv = "0.0.11"
 
 [lib]
 crate-type = ["staticlib"]
