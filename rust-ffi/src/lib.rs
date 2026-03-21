@@ -7,33 +7,30 @@
 //! Memory model:
 //! - `nsv_decode` returns an owned `*mut NsvHandle` that must be freed with `nsv_free`.
 //! - `nsv_cell` returns a pointer into the handle's internal storage — valid until `nsv_free`.
+//!   For cells that didn't need unescaping, this points directly into the input buffer (zero-copy).
+//!   For cells that did need unescaping, this points into the Cow's owned allocation.
 //! - `nsv_encode` returns a malloc'd C string that must be freed with `nsv_free_string`.
 
+use std::borrow::Cow;
 use std::ffi::CString;
 use std::os::raw::c_char;
 
-/// Opaque handle holding decoded NSV data.
+/// Opaque handle holding decoded NSV data with zero-copy cells.
 ///
-/// Stores the raw bytes of each cell contiguously, with a null terminator
-/// appended so that the C side can treat each cell as a C string directly
-/// (via `nsv_cell`), avoiding per-access allocation.
+/// Owns the input buffer and stores decoded cells as `Cow<[u8]>`.
+/// Borrowed cells point directly into `input` (zero-copy);
+/// owned cells hold their own allocation (only when unescaping was needed).
 pub struct NsvHandle {
-    /// Decoded data as `Vec<Vec<String>>`.
-    data: Vec<Vec<String>>,
+    /// Pinned copy of the input bytes. Cow::Borrowed cells reference this.
+    _input: Box<[u8]>,
+    /// Decoded data. Lifetimes are tied to `_input` via unsafe transmute.
+    data: Vec<Vec<Cow<'static, [u8]>>>,
 }
 
-fn bytes_to_strings(rows: Vec<Vec<Vec<u8>>>) -> Vec<Vec<String>> {
-    rows.into_iter()
-        .map(|row| {
-            row.into_iter()
-                .map(|cell| {
-                    // Best-effort UTF-8. DuckDB operates on strings, so lossy is
-                    // preferable to rejecting the whole file.
-                    String::from_utf8(cell).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
-                })
-                .collect()
-        })
-        .collect()
+/// Opaque handle for projected (column-subset) decode.
+pub struct ProjectedNsvHandle {
+    _input: Box<[u8]>,
+    data: Vec<Vec<Cow<'static, [u8]>>>,
 }
 
 /// Decode a byte buffer into an NSV handle.
@@ -46,8 +43,19 @@ pub extern "C" fn nsv_decode(ptr: *const u8, len: usize) -> *mut NsvHandle {
         return std::ptr::null_mut();
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let data = bytes_to_strings(nsv::decode_bytes(bytes));
-    Box::into_raw(Box::new(NsvHandle { data }))
+
+    // Copy input into a stable heap allocation that won't move.
+    let input: Box<[u8]> = bytes.into();
+    let input_ref: &[u8] = &input;
+
+    // SAFETY: `input` is heap-allocated and pinned inside NsvHandle.
+    // The Cow::Borrowed variants point into `input`, which lives as long as
+    // the NsvHandle. We transmute the lifetime to 'static to store them
+    // in the struct. The pointers remain valid until NsvHandle is dropped.
+    let data: Vec<Vec<Cow<'_, [u8]>>> = nsv::decode_bytes(input_ref);
+    let data: Vec<Vec<Cow<'static, [u8]>>> = unsafe { std::mem::transmute(data) };
+
+    Box::into_raw(Box::new(NsvHandle { _input: input, data }))
 }
 
 /// Number of rows in the decoded data.
@@ -69,13 +77,14 @@ pub extern "C" fn nsv_col_count(handle: *const NsvHandle, row: usize) -> usize {
     h.data.get(row).map_or(0, |r| r.len())
 }
 
-/// Pointer to the cell string at `(row, col)`.
+/// Pointer to the cell bytes at `(row, col)`.
 ///
 /// Returns null if out of bounds. The returned pointer is valid until
-/// `nsv_free(handle)`. The string is null-terminated (it's a Rust `String`
-/// whose backing allocation we expose directly — we append a '\0' below).
+/// `nsv_free(handle)`. For cells without escape sequences, this points
+/// directly into the input buffer (zero-copy). For escaped cells, it
+/// points into the Cow's owned allocation.
 ///
-/// `out_len` receives the byte length (excluding null terminator).
+/// `out_len` receives the byte length.
 #[no_mangle]
 pub extern "C" fn nsv_cell(
     handle: *const NsvHandle,
@@ -89,10 +98,11 @@ pub extern "C" fn nsv_cell(
     let h = unsafe { &*handle };
     match h.data.get(row).and_then(|r| r.get(col)) {
         Some(cell) => {
+            let bytes: &[u8] = cell;
             if !out_len.is_null() {
-                unsafe { *out_len = cell.len() };
+                unsafe { *out_len = bytes.len() };
             }
-            cell.as_ptr() as *const c_char
+            bytes.as_ptr() as *const c_char
         }
         None => std::ptr::null(),
     }
@@ -108,10 +118,6 @@ pub extern "C" fn nsv_free(handle: *mut NsvHandle) {
 
 // ── Projected decode (scan-time) ────────────────────────────────────
 
-pub struct ProjectedNsvHandle {
-    data: Vec<Vec<String>>,
-}
-
 #[no_mangle]
 pub extern "C" fn nsv_decode_projected(
     ptr: *const u8, len: usize, col_indices: *const usize, num_cols: usize,
@@ -121,8 +127,16 @@ pub extern "C" fn nsv_decode_projected(
     }
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
     let columns = unsafe { std::slice::from_raw_parts(col_indices, num_cols) };
-    let data = bytes_to_strings(nsv::decode_bytes_projected(bytes, columns));
-    Box::into_raw(Box::new(ProjectedNsvHandle { data }))
+
+    let input: Box<[u8]> = bytes.into();
+    let input_ref: &[u8] = &input;
+
+    // SAFETY: same as nsv_decode — Cow borrows from `input` which is pinned
+    // inside the handle.
+    let data: Vec<Vec<Cow<'_, [u8]>>> = nsv::decode_bytes_projected(input_ref, columns);
+    let data: Vec<Vec<Cow<'static, [u8]>>> = unsafe { std::mem::transmute(data) };
+
+    Box::into_raw(Box::new(ProjectedNsvHandle { _input: input, data }))
 }
 
 #[no_mangle]
@@ -139,8 +153,9 @@ pub extern "C" fn nsv_projected_cell(
     let h = unsafe { &*handle };
     match h.data.get(row).and_then(|r| r.get(proj_col)) {
         Some(cell) => {
-            if !out_len.is_null() { unsafe { *out_len = cell.len() }; }
-            cell.as_ptr() as *const c_char
+            let bytes: &[u8] = cell;
+            if !out_len.is_null() { unsafe { *out_len = bytes.len() }; }
+            bytes.as_ptr() as *const c_char
         }
         None => std::ptr::null(),
     }
@@ -362,5 +377,56 @@ mod tests {
         assert_eq!(nsv_projected_row_count(std::ptr::null()), 0);
         assert!(nsv_projected_cell(std::ptr::null(), 0, 0, std::ptr::null_mut()).is_null());
         nsv_projected_free(std::ptr::null_mut());
+    }
+
+    #[test]
+    fn test_zero_copy_clean_cells() {
+        // Clean cells (no escaping) should borrow directly from input — verify
+        // the pointer falls within the handle's input buffer range.
+        let input = b"hello\nworld\n\nfoo\nbar\n\n";
+        let handle = nsv_decode(input.as_ptr(), input.len());
+        assert!(!handle.is_null());
+        let h = unsafe { &*handle };
+
+        // Check that borrowed cells' data pointers fall within _input's range.
+        let input_start = h._input.as_ptr() as usize;
+        let input_end = input_start + h._input.len();
+
+        for row in &h.data {
+            for cell in row {
+                match cell {
+                    Cow::Borrowed(b) => {
+                        let cell_ptr = b.as_ptr() as usize;
+                        assert!(cell_ptr >= input_start && cell_ptr < input_end,
+                            "Borrowed cell should point into input buffer");
+                    }
+                    Cow::Owned(_) => {
+                        panic!("Clean cell should be Cow::Borrowed, not Owned");
+                    }
+                }
+            }
+        }
+
+        nsv_free(handle);
+    }
+
+    #[test]
+    fn test_escaped_cells_are_owned() {
+        // Cells that required unescaping should be Cow::Owned.
+        let input = b"line1\\nline2\n\n";
+        let handle = nsv_decode(input.as_ptr(), input.len());
+        assert!(!handle.is_null());
+        let h = unsafe { &*handle };
+
+        let cell = &h.data[0][0];
+        assert!(matches!(cell, Cow::Owned(_)), "Escaped cell should be Cow::Owned");
+
+        // Verify the unescaped content is correct
+        let mut len = 0usize;
+        let ptr = nsv_cell(handle, 0, 0, &mut len);
+        let s = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+        assert_eq!(s, b"line1\nline2");
+
+        nsv_free(handle);
     }
 }
