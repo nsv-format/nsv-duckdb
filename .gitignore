@@ -6,5 +6,8 @@ build/
 # Rust build artifacts
 rust-ffi/target/
 
-# Benchmark generated data
-benchmarks/data/
+# Benchmarks
+benchmarks/
+
+# Profiling artifacts
+cachegrind.out.*
