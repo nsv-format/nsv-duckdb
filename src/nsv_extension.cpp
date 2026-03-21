@@ -77,6 +77,9 @@ struct NSVBindData : public TableFunctionData {
   SampleHandle *sample = nullptr;
   //! Raw file bytes — kept alive for inline parsing during scan.
   string raw_buffer;
+  //! Row offsets built in C++ during bind. offsets[i] = start of row i.
+  //! offsets[num_rows] = sentinel (end of input).
+  vector<size_t> row_offsets;
   bool all_varchar = false;
 
   ~NSVBindData() {
@@ -87,11 +90,7 @@ struct NSVBindData : public TableFunctionData {
 };
 
 struct NSVGlobalState : public GlobalTableFunctionState {
-  //! Row index: byte offsets for each \n\n boundary.
-  RowIndex *row_index = nullptr;
-  //! Pointer to the offsets array (owned by row_index).
-  const size_t *offsets = nullptr;
-  //! Total number of rows (including header at index 0).
+  //! Total number of rows (from bind data's row_offsets).
   idx_t total_rows = 0;
   //! Atomic counter for parallel scan — next row to process.
   //! Starts at 1 (row 0 is the header).
@@ -103,15 +102,8 @@ struct NSVGlobalState : public GlobalTableFunctionState {
     if (total_rows <= 1) {
       return 1;
     }
-    // One thread per STANDARD_VECTOR_SIZE rows.
-    idx_t data_rows = total_rows - 1; // exclude header
+    idx_t data_rows = total_rows - 1;
     return (data_rows + STANDARD_VECTOR_SIZE - 1) / STANDARD_VECTOR_SIZE;
-  }
-
-  ~NSVGlobalState() {
-    if (row_index) {
-      nsv_row_index_free(row_index);
-    }
   }
 };
 
@@ -152,6 +144,20 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
 
   result->raw_buffer.resize(file_size);
   fs.Read(*file_handle, (void *)result->raw_buffer.data(), file_size);
+
+  // Build row offsets using Rust FFI (SIMD-accelerated memchr::memmem).
+  // Done at bind time while data is still hot in cache from the file read.
+  {
+    RowIndex *ri = nsv_build_row_index(
+        reinterpret_cast<const uint8_t *>(result->raw_buffer.data()),
+        result->raw_buffer.size());
+    if (ri) {
+      size_t nrows = nsv_row_index_count(ri);
+      const size_t *offsets = nsv_row_index_offsets(ri);
+      result->row_offsets.assign(offsets, offsets + nrows + 1);
+      nsv_row_index_free(ri);
+    }
+  }
 
   // Sample decode: header + up to 1000 data rows for type sniffing.
   result->sample = nsv_decode_sample(
@@ -197,14 +203,8 @@ NSVInitGlobal(ClientContext &ctx, TableFunctionInitInput &input) {
 
   auto &bind = input.bind_data->Cast<NSVBindData>();
 
-  if (!bind.raw_buffer.empty()) {
-    state->row_index = nsv_build_row_index(
-        reinterpret_cast<const uint8_t *>(bind.raw_buffer.data()),
-        bind.raw_buffer.size());
-    if (state->row_index) {
-      state->total_rows = nsv_row_index_count(state->row_index);
-      state->offsets = nsv_row_index_offsets(state->row_index);
-    }
+  if (!bind.row_offsets.empty()) {
+    state->total_rows = bind.row_offsets.size() - 1; // excluding sentinel
   }
 
   return std::move(state);
@@ -316,7 +316,7 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
   auto &gstate = input.global_state->Cast<NSVGlobalState>();
   auto &lstate = input.local_state->Cast<NSVLocalState>();
 
-  if (!gstate.row_index || gstate.total_rows <= 1) {
+  if (gstate.total_rows <= 1) {
     output.SetCardinality(0);
     return;
   }
@@ -332,7 +332,7 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
   idx_t count =
       MinValue<idx_t>(STANDARD_VECTOR_SIZE, gstate.total_rows - start_row);
 
-  const auto *offsets = gstate.offsets;
+  const auto *offsets = bind.row_offsets.data();
   const auto *raw =
       reinterpret_cast<const uint8_t *>(bind.raw_buffer.data());
 
