@@ -15,6 +15,9 @@ use std::borrow::Cow;
 use std::ffi::CString;
 use std::os::raw::c_char;
 
+use memchr::memmem;
+use rayon::prelude::*;
+
 /// Opaque handle holding decoded NSV data with zero-copy cells.
 ///
 /// Owns the input buffer and stores decoded cells as `Cow<[u8]>`.
@@ -163,6 +166,299 @@ pub extern "C" fn nsv_projected_cell(
 
 #[no_mangle]
 pub extern "C" fn nsv_projected_free(handle: *mut ProjectedNsvHandle) {
+    if !handle.is_null() { unsafe { drop(Box::from_raw(handle)) }; }
+}
+
+// ── Sample decode (bind-time: header + type sniffing) ───────────────
+
+fn decode_sample(input: &[u8], max_rows: usize) -> Vec<Vec<Cow<'_, [u8]>>> {
+    let mut data = Vec::new();
+    let mut row: Vec<Cow<'_, [u8]>> = Vec::new();
+    let mut start = 0;
+
+    for (pos, &b) in input.iter().enumerate() {
+        if b == b'\n' {
+            if pos > start {
+                row.push(nsv::unescape_bytes(&input[start..pos]));
+            } else {
+                data.push(row);
+                row = Vec::new();
+                if data.len() >= max_rows {
+                    return data;
+                }
+            }
+            start = pos + 1;
+        }
+    }
+
+    if start < input.len() {
+        row.push(nsv::unescape_bytes(&input[start..]));
+    }
+    if !row.is_empty() {
+        data.push(row);
+    }
+    data
+}
+
+pub struct SampleHandle {
+    _input: Box<[u8]>,
+    data: Vec<Vec<Cow<'static, [u8]>>>,
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_decode_sample(
+    ptr: *const u8,
+    len: usize,
+    max_rows: usize,
+) -> *mut SampleHandle {
+    if ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    let input: Box<[u8]> = unsafe { std::slice::from_raw_parts(ptr, len) }.into();
+    let data = decode_sample(&input, max_rows);
+    let data: Vec<Vec<Cow<'static, [u8]>>> = unsafe { std::mem::transmute(data) };
+    Box::into_raw(Box::new(SampleHandle { _input: input, data }))
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_sample_row_count(handle: *const SampleHandle) -> usize {
+    if handle.is_null() { return 0; }
+    unsafe { &*handle }.data.len()
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_sample_col_count(handle: *const SampleHandle, row: usize) -> usize {
+    if handle.is_null() { return 0; }
+    let h = unsafe { &*handle };
+    h.data.get(row).map_or(0, |r| r.len())
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_sample_cell(
+    handle: *const SampleHandle, row: usize, col: usize, out_len: *mut usize,
+) -> *const c_char {
+    if handle.is_null() { return std::ptr::null(); }
+    let h = unsafe { &*handle };
+    match h.data.get(row).and_then(|r| r.get(col)) {
+        Some(cell) => {
+            let bytes: &[u8] = cell;
+            if !out_len.is_null() { unsafe { *out_len = bytes.len() }; }
+            bytes.as_ptr() as *const c_char
+        }
+        None => std::ptr::null(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_sample_free(handle: *mut SampleHandle) {
+    if !handle.is_null() { unsafe { drop(Box::from_raw(handle)) }; }
+}
+
+// ── Zero-copy projected decode ──────────────────────────────────────
+//
+// For typed (non-VARCHAR) columns: stores (offset, length) into the input
+// buffer. No unescape, no allocation.
+// For VARCHAR columns: unescaped via Cow (borrowed when clean, owned when escaped).
+// Parallel scanning for inputs > 64KB.
+
+const PARALLEL_THRESHOLD: usize = 64 * 1024;
+
+enum CellRef {
+    Raw(usize, usize),
+    Unescaped(Vec<u8>),
+}
+
+pub struct ZeroCopyHandle {
+    input: Vec<u8>,
+    cells: Vec<Vec<CellRef>>,
+}
+
+fn build_col_map(columns: &[usize]) -> (Vec<usize>, usize) {
+    let max_col = columns.iter().copied().max().unwrap_or(0);
+    let mut col_map = vec![usize::MAX; max_col + 1];
+    for (proj_idx, &orig_col) in columns.iter().enumerate() {
+        col_map[orig_col] = proj_idx;
+    }
+    (col_map, max_col)
+}
+
+fn decode_zerocopy_sequential(
+    input: &[u8],
+    base_offset: usize,
+    columns: &[usize],
+    skip_unescape: &[bool],
+) -> Vec<Vec<CellRef>> {
+    let (col_map, max_col) = build_col_map(columns);
+    let stride = columns.len();
+    let mut data: Vec<Vec<CellRef>> = Vec::new();
+    let mut row: Vec<CellRef> = (0..stride).map(|_| CellRef::Raw(0, 0)).collect();
+    let mut col_idx: usize = 0;
+    let mut start = 0;
+    let mut row_has_cells = false;
+
+    for (pos, &b) in input.iter().enumerate() {
+        if b == b'\n' {
+            if pos > start {
+                if col_idx <= max_col {
+                    if let Some(&proj_idx) = col_map.get(col_idx) {
+                        if proj_idx != usize::MAX {
+                            if skip_unescape[proj_idx] {
+                                row[proj_idx] = CellRef::Raw(base_offset + start, pos - start);
+                            } else {
+                                row[proj_idx] = CellRef::Unescaped(
+                                    nsv::unescape_bytes(&input[start..pos]).into_owned(),
+                                );
+                            }
+                        }
+                    }
+                }
+                col_idx += 1;
+                row_has_cells = true;
+            } else {
+                if row_has_cells || !data.is_empty() || col_idx == 0 {
+                    data.push(row);
+                    row = (0..stride).map(|_| CellRef::Raw(0, 0)).collect();
+                }
+                col_idx = 0;
+                row_has_cells = false;
+            }
+            start = pos + 1;
+        }
+    }
+
+    if start < input.len() {
+        if col_idx <= max_col {
+            if let Some(&proj_idx) = col_map.get(col_idx) {
+                if proj_idx != usize::MAX {
+                    let cell_len = input.len() - start;
+                    if skip_unescape[proj_idx] {
+                        row[proj_idx] = CellRef::Raw(base_offset + start, cell_len);
+                    } else {
+                        row[proj_idx] = CellRef::Unescaped(
+                            nsv::unescape_bytes(&input[start..]).into_owned(),
+                        );
+                    }
+                }
+            }
+        }
+        row_has_cells = true;
+    }
+
+    if row_has_cells {
+        data.push(row);
+    }
+
+    data
+}
+
+fn decode_zerocopy_parallel(
+    input: &[u8],
+    columns: &[usize],
+    skip_unescape: &[bool],
+) -> Vec<Vec<CellRef>> {
+    let num_threads = rayon::current_num_threads();
+    let chunk_size = input.len() / num_threads;
+
+    if chunk_size == 0 {
+        return decode_zerocopy_sequential(input, 0, columns, skip_unescape);
+    }
+
+    let finder = memmem::Finder::new(b"\n\n");
+    let mut splits = Vec::with_capacity(num_threads + 1);
+    splits.push(0usize);
+
+    for i in 1..num_threads {
+        let nominal = i * chunk_size;
+        if let Some(offset) = finder.find(&input[nominal..]) {
+            let split = nominal + offset + 2;
+            if split < input.len() {
+                splits.push(split);
+            }
+        }
+    }
+    splits.push(input.len());
+    splits.dedup();
+
+    if splits.len() <= 2 {
+        return decode_zerocopy_sequential(input, 0, columns, skip_unescape);
+    }
+
+    let chunks: Vec<(usize, &[u8])> = splits
+        .windows(2)
+        .map(|w| (w[0], &input[w[0]..w[1]]))
+        .collect();
+
+    let chunk_results: Vec<Vec<Vec<CellRef>>> = chunks
+        .par_iter()
+        .map(|&(base_offset, chunk)| {
+            decode_zerocopy_sequential(chunk, base_offset, columns, skip_unescape)
+        })
+        .collect();
+
+    let total_rows: usize = chunk_results.iter().map(|r| r.len()).sum();
+    let mut result = Vec::with_capacity(total_rows);
+    for chunk_rows in chunk_results {
+        result.extend(chunk_rows);
+    }
+    result
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_decode_zerocopy(
+    ptr: *const u8,
+    len: usize,
+    col_indices: *const usize,
+    num_cols: usize,
+    skip_unescape_flags: *const u8,
+) -> *mut ZeroCopyHandle {
+    if ptr.is_null() || col_indices.is_null() || num_cols == 0 || skip_unescape_flags.is_null() {
+        return std::ptr::null_mut();
+    }
+    let input = unsafe { std::slice::from_raw_parts(ptr, len) }.to_vec();
+    let columns = unsafe { std::slice::from_raw_parts(col_indices, num_cols) };
+    let raw_flags = unsafe { std::slice::from_raw_parts(skip_unescape_flags, num_cols) };
+    let skip: Vec<bool> = raw_flags.iter().map(|&f| f != 0).collect();
+
+    let cells = if input.len() < PARALLEL_THRESHOLD {
+        decode_zerocopy_sequential(&input, 0, columns, &skip)
+    } else {
+        decode_zerocopy_parallel(&input, columns, &skip)
+    };
+
+    Box::into_raw(Box::new(ZeroCopyHandle { input, cells }))
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_zerocopy_row_count(handle: *const ZeroCopyHandle) -> usize {
+    if handle.is_null() { return 0; }
+    unsafe { &*handle }.cells.len()
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_zerocopy_cell(
+    handle: *const ZeroCopyHandle, row: usize, proj_col: usize, out_len: *mut usize,
+) -> *const c_char {
+    if handle.is_null() { return std::ptr::null(); }
+    let h = unsafe { &*handle };
+    match h.cells.get(row).and_then(|r| r.get(proj_col)) {
+        Some(cell) => {
+            let (ptr, len) = match cell {
+                CellRef::Raw(offset, length) => {
+                    (h.input[*offset..].as_ptr(), *length)
+                }
+                CellRef::Unescaped(bytes) => {
+                    (bytes.as_ptr(), bytes.len())
+                }
+            };
+            if !out_len.is_null() { unsafe { *out_len = len }; }
+            ptr as *const c_char
+        }
+        None => std::ptr::null(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nsv_zerocopy_free(handle: *mut ZeroCopyHandle) {
     if !handle.is_null() { unsafe { drop(Box::from_raw(handle)) }; }
 }
 

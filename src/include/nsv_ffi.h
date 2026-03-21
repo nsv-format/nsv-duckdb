@@ -61,6 +61,35 @@ const char *nsv_projected_cell(const ProjectedNsvHandle *h, size_t row,
 /* Free a handle returned by nsv_decode_projected(). */
 void nsv_projected_free(ProjectedNsvHandle *h);
 
+/* ── Sample decode (bind-time) ────────────────────────────────────── */
+
+typedef struct SampleHandle SampleHandle;
+
+SampleHandle *nsv_decode_sample(const uint8_t *ptr, size_t len, size_t max_rows);
+size_t nsv_sample_row_count(const SampleHandle *h);
+size_t nsv_sample_col_count(const SampleHandle *h, size_t row);
+const char *nsv_sample_cell(const SampleHandle *h, size_t row, size_t col,
+                             size_t *out_len);
+void nsv_sample_free(SampleHandle *h);
+
+/* ── Zero-copy projected reading ──────────────────────────────────── */
+
+typedef struct ZeroCopyHandle ZeroCopyHandle;
+
+/* Decode with zero-copy for typed columns.
+ * skip_unescape: array of num_cols flags (0/1). 1 = raw slice, 0 = unescape. */
+ZeroCopyHandle *nsv_decode_zerocopy(const uint8_t *ptr, size_t len,
+                                     const size_t *col_indices,
+                                     size_t num_cols,
+                                     const uint8_t *skip_unescape);
+
+size_t nsv_zerocopy_row_count(const ZeroCopyHandle *h);
+
+const char *nsv_zerocopy_cell(const ZeroCopyHandle *h, size_t row,
+                               size_t proj_col, size_t *out_len);
+
+void nsv_zerocopy_free(ZeroCopyHandle *h);
+
 /* ── Writing ─────────────────────────────────────────────────────── */
 
 /* Opaque encoder handle. */

@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 nsv = "0.0.11"
+memchr = "2.7"
+rayon = "1.10"
 
 [lib]
 crate-type = ["staticlib"]
