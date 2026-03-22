@@ -194,14 +194,20 @@ pub extern "C" fn nsv_decode_flat(
                     if let Some(&proj_idx) = col_map.get(col_idx) {
                         if proj_idx != usize::MAX {
                             let base = row_count * num_cols + proj_idx;
-                            if unescape_flags[proj_idx] != 0
-                                && memchr::memchr(b'\\', &input[start..pos]).is_some()
-                            {
-                                let scratch_start = scratch.len();
-                                let unescaped = nsv::unescape_bytes(&input[start..pos]);
-                                scratch.extend_from_slice(&unescaped);
-                                offsets[base] = scratch_start | SCRATCH_BIT;
-                                lengths[base] = unescaped.len();
+                            if unescape_flags[proj_idx] != 0 {
+                                match nsv::unescape_bytes(&input[start..pos]) {
+                                    std::borrow::Cow::Borrowed(_) => {
+                                        offsets[base] = input_base_offset + start;
+                                        lengths[base] = pos - start;
+                                    }
+                                    std::borrow::Cow::Owned(unescaped) => {
+                                        let scratch_start = scratch.len();
+                                        let ulen = unescaped.len();
+                                        scratch.extend_from_slice(&unescaped);
+                                        offsets[base] = scratch_start | SCRATCH_BIT;
+                                        lengths[base] = ulen;
+                                    }
+                                }
                             } else {
                                 offsets[base] = input_base_offset + start;
                                 lengths[base] = pos - start;
@@ -239,14 +245,20 @@ pub extern "C" fn nsv_decode_flat(
             if let Some(&proj_idx) = col_map.get(col_idx) {
                 if proj_idx != usize::MAX {
                     let base = row_count * num_cols + proj_idx;
-                    if unescape_flags[proj_idx] != 0
-                        && memchr::memchr(b'\\', &input[start..]).is_some()
-                    {
-                        let scratch_start = scratch.len();
-                        let unescaped = nsv::unescape_bytes(&input[start..]);
-                        scratch.extend_from_slice(&unescaped);
-                        offsets[base] = scratch_start | SCRATCH_BIT;
-                        lengths[base] = unescaped.len();
+                    if unescape_flags[proj_idx] != 0 {
+                        match nsv::unescape_bytes(&input[start..]) {
+                            std::borrow::Cow::Borrowed(_) => {
+                                offsets[base] = input_base_offset + start;
+                                lengths[base] = len - start;
+                            }
+                            std::borrow::Cow::Owned(unescaped) => {
+                                let scratch_start = scratch.len();
+                                let ulen = unescaped.len();
+                                scratch.extend_from_slice(&unescaped);
+                                offsets[base] = scratch_start | SCRATCH_BIT;
+                                lengths[base] = ulen;
+                            }
+                        }
                     } else {
                         offsets[base] = input_base_offset + start;
                         lengths[base] = len - start;
