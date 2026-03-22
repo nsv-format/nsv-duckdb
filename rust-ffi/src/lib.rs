@@ -166,7 +166,7 @@ pub extern "C" fn nsv_projected_free(handle: *mut ProjectedNsvHandle) {
     if !handle.is_null() { unsafe { drop(Box::from_raw(handle)) }; }
 }
 
-/// Encode a seqseq (built cell-by-cell from C) into an NSV byte buffer.
+/// Streaming NSV encoder backed by `nsv::Writer`.
 ///
 /// Usage from C:
 /// 1. `nsv_encoder_new()` → encoder handle
@@ -175,14 +175,14 @@ pub extern "C" fn nsv_projected_free(handle: *mut ProjectedNsvHandle) {
 /// 4. `nsv_encoder_finish(enc, &out_ptr, &out_len)` → transfers ownership of the buffer
 /// 5. `nsv_free_buf(out_ptr)` when done
 pub struct NsvEncoder {
-    rows: Vec<Vec<String>>,
-    current_row: Vec<String>,
+    writer: nsv::Writer<Vec<u8>>,
+    current_row: Vec<Vec<u8>>,
 }
 
 #[no_mangle]
 pub extern "C" fn nsv_encoder_new() -> *mut NsvEncoder {
     Box::into_raw(Box::new(NsvEncoder {
-        rows: Vec::new(),
+        writer: nsv::Writer::new(Vec::new()),
         current_row: Vec::new(),
     }))
 }
@@ -194,9 +194,7 @@ pub extern "C" fn nsv_encoder_push_cell(enc: *mut NsvEncoder, ptr: *const u8, le
     }
     let e = unsafe { &mut *enc };
     let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    let s = String::from_utf8(bytes.to_vec())
-        .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-    e.current_row.push(s);
+    e.current_row.push(bytes.to_vec());
 }
 
 /// Push a NULL cell (empty string in NSV).
@@ -206,7 +204,7 @@ pub extern "C" fn nsv_encoder_push_null(enc: *mut NsvEncoder) {
         return;
     }
     let e = unsafe { &mut *enc };
-    e.current_row.push(String::new());
+    e.current_row.push(Vec::new());
 }
 
 #[no_mangle]
@@ -216,7 +214,7 @@ pub extern "C" fn nsv_encoder_end_row(enc: *mut NsvEncoder) {
     }
     let e = unsafe { &mut *enc };
     let row = std::mem::take(&mut e.current_row);
-    e.rows.push(row);
+    let _ = e.writer.write_row(&row);
 }
 
 /// Finish encoding. Writes the output pointer and length.
@@ -234,12 +232,11 @@ pub extern "C" fn nsv_encoder_finish(
     // Flush any pending row
     if !e.current_row.is_empty() {
         let row = std::mem::take(&mut e.current_row);
-        e.rows.push(row);
+        let _ = e.writer.write_row(&row);
     }
-    let encoded = nsv::encode(&e.rows);
-    let bytes = encoded.into_bytes();
-    let len = bytes.len();
-    let boxed = bytes.into_boxed_slice();
+    let buf = e.writer.into_inner();
+    let len = buf.len();
+    let boxed = buf.into_boxed_slice();
     let ptr = Box::into_raw(boxed) as *mut u8;
     if !out_ptr.is_null() {
         unsafe { *out_ptr = ptr };
