@@ -697,20 +697,7 @@ struct NSVWriteBindData : public TableFunctionData {
 struct NSVWriteGlobalState : public GlobalFunctionData {
   string filename;
   unique_ptr<FileHandle> file_handle;
-  NsvEncoder *encoder = nullptr;
   bool header_written = false;
-
-  ~NSVWriteGlobalState() {
-    if (encoder) {
-      uint8_t *buf = nullptr;
-      size_t len = 0;
-      nsv_encoder_finish(encoder, &buf, &len);
-      if (buf) {
-        nsv_free_buf(buf, len);
-      }
-      encoder = nullptr;
-    }
-  }
 };
 
 struct NSVWriteLocalState : public LocalFunctionData {};
@@ -740,7 +727,6 @@ NSVWriteInitGlobal(ClientContext &ctx, FunctionData &bind_data,
   result->file_handle =
       fs.OpenFile(filename, FileFlags::FILE_FLAGS_WRITE |
                                 FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
-  result->encoder = nsv_encoder_new();
   return std::move(result);
 }
 
@@ -749,59 +735,89 @@ static unique_ptr<LocalFunctionData> NSVWriteInitLocal(ExecutionContext &,
   return make_uniq<NSVWriteLocalState>();
 }
 
-static void NSVWriteSink(ExecutionContext &, FunctionData &bind_data,
+/// Escape an NSV cell (replace \n→\\n and \\→\\\\) and append to buf.
+static inline void AppendEscaped(const char *data, idx_t len,
+                                 vector<uint8_t> &buf) {
+  for (idx_t i = 0; i < len; i++) {
+    if (data[i] == '\n') {
+      buf.push_back('\\');
+      buf.push_back('n');
+    } else if (data[i] == '\\') {
+      buf.push_back('\\');
+      buf.push_back('\\');
+    } else {
+      buf.push_back(static_cast<uint8_t>(data[i]));
+    }
+  }
+}
+
+static void NSVWriteSink(ExecutionContext &context, FunctionData &bind_data,
                          GlobalFunctionData &gstate, LocalFunctionData &,
                          DataChunk &input) {
   auto &bind = bind_data.Cast<NSVWriteBindData>();
   auto &state = gstate.Cast<NSVWriteGlobalState>();
 
+  auto &fs = FileSystem::GetFileSystem(context.client);
+
   if (!state.header_written && bind.write_header) {
+    vector<uint8_t> hdr;
     for (auto &name : bind.names) {
-      nsv_encoder_push_cell(state.encoder,
-                            reinterpret_cast<const uint8_t *>(name.data()),
-                            name.size());
+      AppendEscaped(name.data(), name.size(), hdr);
+      hdr.push_back('\n');
     }
-    nsv_encoder_end_row(state.encoder);
+    hdr.push_back('\n'); // row separator
+    fs.Write(*state.file_handle, (void *)hdr.data(), hdr.size());
     state.header_written = true;
   }
 
   idx_t count = input.size();
-  for (idx_t row = 0; row < count; row++) {
-    for (idx_t col = 0; col < input.ColumnCount(); col++) {
-      auto val = input.GetValue(col, row);
-      if (val.IsNull()) {
-        nsv_encoder_push_null(state.encoder);
-      } else {
-        auto str = val.ToString();
-        nsv_encoder_push_cell(state.encoder,
-                              reinterpret_cast<const uint8_t *>(str.data()),
-                              str.size());
-      }
+  idx_t ncols = input.ColumnCount();
+
+  // Batch-cast all non-VARCHAR columns to VARCHAR.
+  vector<Vector> cast_vectors;
+  cast_vectors.reserve(ncols);
+  for (idx_t col = 0; col < ncols; col++) {
+    if (bind.types[col] == LogicalType::VARCHAR) {
+      // No cast needed — use input vector directly.
+      cast_vectors.emplace_back(LogicalType::VARCHAR);
+    } else {
+      Vector target(LogicalType::VARCHAR, count);
+      VectorOperations::Cast(context.client, input.data[col], target, count);
+      cast_vectors.push_back(std::move(target));
     }
-    nsv_encoder_end_row(state.encoder);
   }
+
+  // Write rows directly from flat vector data.
+  // Build output into a buffer, then pass to encoder for escaping.
+  vector<uint8_t> row_buf;
+  row_buf.reserve(count * ncols * 16); // rough estimate
+
+  for (idx_t row = 0; row < count; row++) {
+    for (idx_t col = 0; col < ncols; col++) {
+      auto &vec = (bind.types[col] == LogicalType::VARCHAR) ? input.data[col]
+                                                            : cast_vectors[col];
+      auto &validity = FlatVector::Validity(vec);
+      if (!validity.RowIsValid(row)) {
+        // NULL → empty cell (just a \n separator)
+      } else {
+        auto str_data = FlatVector::GetData<string_t>(vec);
+        auto cell = str_data[row];
+        AppendEscaped(cell.GetData(), cell.GetSize(), row_buf);
+      }
+      row_buf.push_back('\n'); // cell separator
+    }
+    row_buf.push_back('\n'); // row separator (blank line)
+  }
+
+  fs.Write(*state.file_handle, (void *)row_buf.data(), row_buf.size());
 }
 
 static void NSVWriteCombine(ExecutionContext &, FunctionData &,
                             GlobalFunctionData &, LocalFunctionData &) {}
 
-static void NSVWriteFinalize(ClientContext &ctx, FunctionData &,
-                             GlobalFunctionData &gstate) {
-  auto &state = gstate.Cast<NSVWriteGlobalState>();
-  if (!state.encoder) {
-    return;
-  }
-
-  uint8_t *buf = nullptr;
-  size_t len = 0;
-  nsv_encoder_finish(state.encoder, &buf, &len);
-  state.encoder = nullptr;
-
-  if (buf && len > 0) {
-    auto &fs = FileSystem::GetFileSystem(ctx);
-    fs.Write(*state.file_handle, (void *)buf, len);
-    nsv_free_buf(buf, len);
-  }
+static void NSVWriteFinalize(ClientContext &, FunctionData &,
+                             GlobalFunctionData &) {
+  // All data is written in NSVWriteSink. Nothing to finalize.
 }
 
 // ── Extension registration ──────────────────────────────────────────
