@@ -115,6 +115,7 @@ struct NSVBindData : public TableFunctionData {
   //! Byte offset where data rows begin (past header row).
   size_t data_start_offset = 0;
   bool all_varchar = false;
+  bool has_header = true;
 
   ~NSVBindData() {
 #ifndef _WIN32
@@ -175,6 +176,11 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
     result->all_varchar = it->second.GetValue<bool>();
   }
 
+  auto hdr_it = input.named_parameters.find("header");
+  if (hdr_it != input.named_parameters.end()) {
+    result->has_header = hdr_it->second.GetValue<bool>();
+  }
+
   // Try mmap for local files (avoids kernel→userspace copy).
   bool use_mmap = false;
 #ifndef _WIN32
@@ -230,23 +236,36 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
     throw InvalidInputException("Empty NSV file: %s", result->filename);
   }
 
-  result->data_start_offset = FindNextRowBoundary(buf, buf_len, 0);
-
-  // Row 0 = column headers.
   idx_t ncols = nsv_sample_col_count(sample, 0);
-  for (idx_t i = 0; i < ncols; i++) {
-    size_t cell_len = 0;
-    const char *cell = nsv_sample_cell(sample, 0, i, &cell_len);
-    if (cell && cell_len > 0) {
-      result->names.emplace_back(cell, cell_len);
-    } else {
-      result->names.push_back("col" + to_string(i));
-    }
+  idx_t data_start_row;
 
+  if (result->has_header) {
+    // Row 0 = column headers; data starts after first row boundary.
+    result->data_start_offset = FindNextRowBoundary(buf, buf_len, 0);
+    data_start_row = 1;
+    for (idx_t i = 0; i < ncols; i++) {
+      size_t cell_len = 0;
+      const char *cell = nsv_sample_cell(sample, 0, i, &cell_len);
+      if (cell && cell_len > 0) {
+        result->names.emplace_back(cell, cell_len);
+      } else {
+        result->names.push_back("col" + to_string(i));
+      }
+    }
+  } else {
+    // No header: data starts at byte 0; generate column0, column1, ...
+    result->data_start_offset = 0;
+    data_start_row = 0;
+    for (idx_t i = 0; i < ncols; i++) {
+      result->names.push_back("column" + to_string(i));
+    }
+  }
+
+  for (idx_t i = 0; i < ncols; i++) {
     if (result->all_varchar) {
       result->types.push_back(LogicalType::VARCHAR);
     } else {
-      auto detected = DetectColumnType(ctx, sample, i, 1, 1000);
+      auto detected = DetectColumnType(ctx, sample, i, data_start_row, 1000);
       result->types.push_back(detected);
     }
   }
@@ -571,6 +590,7 @@ static void LoadInternal(ExtensionLoader &loader) {
   read_nsv.init_global = NSVInitGlobal;
   read_nsv.init_local = NSVInitLocal;
   read_nsv.named_parameters["all_varchar"] = LogicalType::BOOLEAN;
+  read_nsv.named_parameters["header"] = LogicalType::BOOLEAN;
   read_nsv.projection_pushdown = true;
   loader.RegisterFunction(read_nsv);
 

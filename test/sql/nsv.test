@@ -271,3 +271,38 @@ query T
 SELECT key FROM read_nsv('__TEST_DIR__/nulls.nsv') WHERE val IS NULL;
 ----
 b
+
+# ── read_nsv: header=false ─────────────────────────────────────────
+
+# With header=false, first row becomes data and columns are column0, column1, ...
+query IIII
+SELECT typeof(column0), typeof(column1), typeof(column2), typeof(column3) FROM read_nsv('__TEST_DIR__/types.nsv', header=false) LIMIT 1;
+----
+VARCHAR	VARCHAR	VARCHAR	VARCHAR
+
+# First row should be the header values treated as data
+query TTTT
+SELECT column0, column1, column2, column3 FROM read_nsv('__TEST_DIR__/types.nsv', header=false) LIMIT 1;
+----
+name	age	salary	active
+
+# Total row count includes the former header row
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/types.nsv', header=false);
+----
+3
+
+# header=false on a headerless file (strings.nsv has headers, so use a raw file)
+statement ok
+COPY (SELECT * FROM (VALUES ('10'),('20'),(''),('30'),('40'),(''))) TO '__TEST_DIR__/noheader.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query II
+SELECT typeof(column0), typeof(column1) FROM read_nsv('__TEST_DIR__/noheader.nsv', header=false) LIMIT 1;
+----
+BIGINT	BIGINT
+
+query II
+SELECT column0, column1 FROM read_nsv('__TEST_DIR__/noheader.nsv', header=false);
+----
+10	20
+30	40
