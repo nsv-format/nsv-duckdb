@@ -12,7 +12,11 @@
 #include "duckdb/parser/parsed_data/create_copy_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
+#include "duckdb/parallel/task_scheduler.hpp"
+
 #include "nsv_ffi.h"
+
+#include <atomic>
 
 #ifndef _WIN32
 #include <fcntl.h>
@@ -31,10 +35,10 @@ static const vector<LogicalType> TYPE_CANDIDATES = {
     LogicalType::VARCHAR // fallback — always succeeds
 };
 
-static LogicalType DetectColumnType(ClientContext &ctx, NsvHandle *data,
+static LogicalType DetectColumnType(ClientContext &ctx, SampleHandle *data,
                                     idx_t col_idx, idx_t start_row,
                                     idx_t sample_size) {
-  idx_t nrows = nsv_row_count(data);
+  idx_t nrows = nsv_sample_row_count(data);
   idx_t end_row = MinValue<idx_t>(nrows, start_row + sample_size);
 
   for (const auto &candidate : TYPE_CANDIDATES) {
@@ -47,9 +51,9 @@ static LogicalType DetectColumnType(ClientContext &ctx, NsvHandle *data,
 
     for (idx_t row = start_row; row < end_row && all_ok; row++) {
       size_t cell_len = 0;
-      const char *cell = nsv_cell(data, row, col_idx, &cell_len);
+      const char *cell = nsv_sample_cell(data, row, col_idx, &cell_len);
       if (!cell || cell_len == 0) {
-        continue; // NULL / empty → casts to anything
+        continue;
       }
       has_value = true;
 
@@ -69,14 +73,36 @@ static LogicalType DetectColumnType(ClientContext &ctx, NsvHandle *data,
   return LogicalType::VARCHAR;
 }
 
+// ── Chunk boundary helpers ──────────────────────────────────────────
+
+//! Find the Nth \n\n boundary starting from `from`.
+static size_t FindNthRowBoundary(const uint8_t *buf, size_t buf_len,
+                                 size_t from, size_t n) {
+  size_t found = 0;
+  for (size_t i = from; i + 1 < buf_len; i++) {
+    if (buf[i] == '\n' && buf[i + 1] == '\n') {
+      found++;
+      if (found == n) {
+        return i + 2;
+      }
+    }
+  }
+  return buf_len;
+}
+
+//! Find the next \n\n boundary at or after `from`.
+static size_t FindNextRowBoundary(const uint8_t *buf, size_t buf_len,
+                                  size_t from) {
+  return FindNthRowBoundary(buf, buf_len, from, 1);
+}
+
 // ── read_nsv ────────────────────────────────────────────────────────
 
 struct NSVBindData : public TableFunctionData {
   string filename;
   vector<string> names;
   vector<LogicalType> types;
-  NsvHandle *handle = nullptr;
-  //! Pointer to file data (valid for lifetime of this object).
+  //! File data pointer and size.
   const uint8_t *file_data = nullptr;
   size_t file_size = 0;
 #ifndef _WIN32
@@ -86,12 +112,11 @@ struct NSVBindData : public TableFunctionData {
 #endif
   //! If read into memory: owned buffer (fallback for non-local/Windows files).
   string read_buffer;
+  //! Byte offset where data rows begin (past header row).
+  size_t data_start_offset = 0;
   bool all_varchar = false;
 
   ~NSVBindData() {
-    if (handle) {
-      nsv_free(handle);
-    }
 #ifndef _WIN32
     if (mmap_ptr && mmap_ptr != MAP_FAILED) {
       munmap(mmap_ptr, file_size);
@@ -103,16 +128,37 @@ struct NSVBindData : public TableFunctionData {
   }
 };
 
-struct NSVScanState : public GlobalTableFunctionState {
-  idx_t current_row = 0;
-  //! Maps output column index → source column index (from projection pushdown).
+struct NSVGlobalState : public GlobalTableFunctionState {
+  //! Maps output column index → source column index.
   vector<column_t> column_ids;
-  //! Projected handle — pre-decoded, only requested columns.
-  ProjectedNsvHandle *projected = nullptr;
+  //! Per-column projection indices for nsv_decode_flat.
+  vector<size_t> col_indices;
+  //! Per-column unescape flags (1 = VARCHAR, needs unescape).
+  vector<uint8_t> needs_unescape;
+  //! Work units: byte ranges [start, end) in the raw buffer.
+  vector<pair<size_t, size_t>> ranges;
+  //! Next range to hand out.
+  std::atomic<idx_t> next_range{0};
 
-  ~NSVScanState() {
-    if (projected) {
-      nsv_projected_free(projected);
+  idx_t MaxThreads() const override { return ranges.size(); }
+};
+
+struct NSVLocalState : public LocalTableFunctionState {
+  //! Flat arrays sized for STANDARD_VECTOR_SIZE rows.
+  vector<size_t> offsets;
+  vector<size_t> lengths;
+  //! Scratch buffer for unescaped cells (from last decode call).
+  NsvScratchBuf *scratch = nullptr;
+  //! Number of projected columns.
+  idx_t num_cols = 0;
+  //! Current byte position within the assigned range.
+  size_t byte_pos = 0;
+  size_t range_end = 0;
+  bool exhausted = true;
+
+  ~NSVLocalState() {
+    if (scratch) {
+      nsv_scratch_free(scratch);
     }
   }
 };
@@ -124,15 +170,14 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
   auto result = make_uniq<NSVBindData>();
   result->filename = input.inputs[0].GetValue<string>();
 
-  // Named parameters
   auto it = input.named_parameters.find("all_varchar");
   if (it != input.named_parameters.end()) {
     result->all_varchar = it->second.GetValue<bool>();
   }
 
-#ifndef _WIN32
   // Try mmap for local files (avoids kernel→userspace copy).
-  // Fall back to DuckDB's filesystem for remote/Windows files.
+  bool use_mmap = false;
+#ifndef _WIN32
   {
     int fd = open(result->filename.c_str(), O_RDONLY);
     if (fd >= 0) {
@@ -145,6 +190,7 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
           result->mmap_ptr = mapped;
           result->file_data = reinterpret_cast<const uint8_t *>(mapped);
           result->file_size = static_cast<size_t>(st.st_size);
+          use_mmap = true;
         } else {
           close(fd);
         }
@@ -155,8 +201,7 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
   }
 #endif
 
-  if (!result->file_data) {
-    // Fallback: read via DuckDB's filesystem (supports HTTP, S3, etc.)
+  if (!use_mmap) {
     auto &fs = FileSystem::GetFileSystem(ctx);
     auto file_handle =
         fs.OpenFile(result->filename, FileFlags::FILE_FLAGS_READ);
@@ -168,23 +213,30 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
     result->file_size = result->read_buffer.size();
   }
 
-  // Eager decode via Rust FFI — headers + type sniffing
-  result->handle = nsv_decode(result->file_data, result->file_size);
-  if (!result->handle) {
+  auto *buf = result->file_data;
+  size_t buf_len = result->file_size;
+
+  // Decode header + up to 1000 sample rows for type sniffing.
+  size_t sample_end = FindNthRowBoundary(buf, buf_len, 0, 1001);
+  SampleHandle *sample = nsv_decode_sample(buf, sample_end, 1002);
+  if (!sample) {
     throw InvalidInputException("Failed to parse NSV file: %s",
                                 result->filename);
   }
 
-  idx_t nrows = nsv_row_count(result->handle);
+  idx_t nrows = nsv_sample_row_count(sample);
   if (nrows == 0) {
+    nsv_sample_free(sample);
     throw InvalidInputException("Empty NSV file: %s", result->filename);
   }
 
-  // Row 0 = column headers
-  idx_t ncols = nsv_col_count(result->handle, 0);
+  result->data_start_offset = FindNextRowBoundary(buf, buf_len, 0);
+
+  // Row 0 = column headers.
+  idx_t ncols = nsv_sample_col_count(sample, 0);
   for (idx_t i = 0; i < ncols; i++) {
     size_t cell_len = 0;
-    const char *cell = nsv_cell(result->handle, 0, i, &cell_len);
+    const char *cell = nsv_sample_cell(sample, 0, i, &cell_len);
     if (cell && cell_len > 0) {
       result->names.emplace_back(cell, cell_len);
     } else {
@@ -194,11 +246,12 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
     if (result->all_varchar) {
       result->types.push_back(LogicalType::VARCHAR);
     } else {
-      // Sample up to 1000 data rows (starting at row 1)
-      auto detected = DetectColumnType(ctx, result->handle, i, 1, 1000);
+      auto detected = DetectColumnType(ctx, sample, i, 1, 1000);
       result->types.push_back(detected);
     }
   }
+
+  nsv_sample_free(sample);
 
   names = result->names;
   return_types = result->types;
@@ -206,120 +259,176 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
 }
 
 static unique_ptr<GlobalTableFunctionState>
-NSVInit(ClientContext &ctx, TableFunctionInitInput &input) {
-  auto state = make_uniq<NSVScanState>();
+NSVInitGlobal(ClientContext &ctx, TableFunctionInitInput &input) {
+  auto state = make_uniq<NSVGlobalState>();
   state->column_ids = input.column_ids;
 
-  // Only use projected decode when a strict subset of columns is requested.
-  // SELECT * populates column_ids with all columns, so re-decoding would
-  // just duplicate the eager handle from bind — skip it.
   auto &bind = input.bind_data->Cast<NSVBindData>();
-  idx_t ncols = bind.names.size();
 
-  if (bind.file_data && bind.file_size > 0 && !state->column_ids.empty() &&
-      state->column_ids.size() < ncols) {
-    vector<size_t> col_indices;
-    col_indices.reserve(state->column_ids.size());
-    for (auto &cid : state->column_ids) {
-      col_indices.push_back(static_cast<size_t>(cid));
+  // Build projection info for nsv_decode_flat.
+  state->col_indices.reserve(state->column_ids.size());
+  state->needs_unescape.reserve(state->column_ids.size());
+  for (auto &cid : state->column_ids) {
+    state->col_indices.push_back(static_cast<size_t>(cid));
+    state->needs_unescape.push_back(
+        bind.types[cid] == LogicalType::VARCHAR ? 1 : 0);
+  }
+
+  // Split data region into ~2MB ranges at \n\n boundaries.
+  auto *buf = bind.file_data;
+  size_t buf_len = bind.file_size;
+  size_t data_start = bind.data_start_offset;
+  size_t data_len = buf_len - data_start;
+
+  idx_t num_threads = TaskScheduler::GetScheduler(ctx).NumberOfThreads();
+  const size_t TARGET_RANGE_BYTES = 2 * 1024 * 1024;
+  idx_t num_ranges = MaxValue<idx_t>(
+      num_threads * 4, static_cast<idx_t>(data_len / TARGET_RANGE_BYTES));
+  num_ranges = MaxValue<idx_t>(1, MinValue<idx_t>(num_ranges, data_len / 4096));
+  size_t range_size = data_len / num_ranges;
+
+  state->ranges.reserve(num_ranges);
+  size_t pos = data_start;
+  for (idx_t i = 1; i < num_ranges; i++) {
+    size_t nominal = data_start + i * range_size;
+    if (nominal >= buf_len)
+      break;
+    size_t boundary = FindNextRowBoundary(buf, buf_len, nominal);
+    if (boundary < buf_len && boundary > pos) {
+      state->ranges.emplace_back(pos, boundary);
+      pos = boundary;
     }
-    state->projected = nsv_decode_projected(
-        bind.file_data, bind.file_size, col_indices.data(), col_indices.size());
+  }
+  if (pos < buf_len) {
+    state->ranges.emplace_back(pos, buf_len);
   }
 
   return std::move(state);
 }
 
+static unique_ptr<LocalTableFunctionState>
+NSVInitLocal(ExecutionContext &, TableFunctionInitInput &,
+             GlobalTableFunctionState *) {
+  return make_uniq<NSVLocalState>();
+}
+
 static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
                     DataChunk &output) {
   auto &bind = input.bind_data->Cast<NSVBindData>();
-  auto &state = input.global_state->Cast<NSVScanState>();
+  auto &gstate = input.global_state->Cast<NSVGlobalState>();
+  auto &lstate = input.local_state->Cast<NSVLocalState>();
 
-  // Skip header row
-  if (state.current_row == 0) {
-    state.current_row = 1;
+  auto *file_buf = bind.file_data;
+  idx_t nc = static_cast<idx_t>(gstate.col_indices.size());
+
+  // Ensure flat arrays are allocated (once).
+  size_t cap = STANDARD_VECTOR_SIZE * nc;
+  if (lstate.offsets.size() < cap) {
+    lstate.offsets.resize(cap);
+    lstate.lengths.resize(cap);
+    lstate.num_cols = nc;
   }
 
-  // Use projected handle if available, otherwise fall back to eager handle.
-  bool use_projected = (state.projected != nullptr);
-  idx_t total_rows = use_projected ? nsv_projected_row_count(state.projected)
-                                   : nsv_row_count(bind.handle);
-  idx_t count =
-      MinValue<idx_t>(STANDARD_VECTOR_SIZE, total_rows - state.current_row);
-  if (count == 0) {
-    output.SetCardinality(0);
-    return;
-  }
-
-  for (idx_t out_col = 0; out_col < output.ColumnCount(); out_col++) {
-    idx_t src_col = state.column_ids[out_col];
-    auto &vec = output.data[out_col];
-    const auto &target_type = bind.types[src_col];
-
-    if (target_type == LogicalType::VARCHAR) {
-      // VARCHAR columns: write strings directly into the output vector.
-      auto str_data = FlatVector::GetData<string_t>(vec);
-      auto &validity = FlatVector::Validity(vec);
-
-      for (idx_t i = 0; i < count; i++) {
-        idx_t row_idx = state.current_row + i;
-        size_t cell_len = 0;
-        const char *cell;
-
-        if (use_projected) {
-          cell =
-              nsv_projected_cell(state.projected, row_idx, out_col, &cell_len);
-        } else {
-          if (src_col >= nsv_col_count(bind.handle, row_idx)) {
-            validity.SetInvalid(i);
-            continue;
-          }
-          cell = nsv_cell(bind.handle, row_idx, src_col, &cell_len);
-        }
-
-        if (!cell || cell_len == 0) {
-          validity.SetInvalid(i);
-        } else {
-          str_data[i] = StringVector::AddString(vec, cell, cell_len);
-        }
+  // Grab ranges until we get data or run out.
+  for (;;) {
+    if (lstate.exhausted || lstate.byte_pos >= lstate.range_end) {
+      idx_t range_idx = gstate.next_range.fetch_add(1);
+      if (range_idx >= static_cast<idx_t>(gstate.ranges.size())) {
+        output.SetCardinality(0);
+        return;
       }
-    } else {
-      // Typed columns: populate a temporary VARCHAR vector, then batch-cast.
-      Vector str_vec(LogicalType::VARCHAR, count);
-      auto str_data = FlatVector::GetData<string_t>(str_vec);
-      auto &str_validity = FlatVector::Validity(str_vec);
-
-      for (idx_t i = 0; i < count; i++) {
-        idx_t row_idx = state.current_row + i;
-        size_t cell_len = 0;
-        const char *cell;
-
-        if (use_projected) {
-          cell =
-              nsv_projected_cell(state.projected, row_idx, out_col, &cell_len);
-        } else {
-          if (src_col >= nsv_col_count(bind.handle, row_idx)) {
-            str_validity.SetInvalid(i);
-            continue;
-          }
-          cell = nsv_cell(bind.handle, row_idx, src_col, &cell_len);
-        }
-
-        if (!cell || cell_len == 0) {
-          str_validity.SetInvalid(i);
-        } else {
-          str_data[i] = StringVector::AddString(str_vec, cell, cell_len);
-        }
-      }
-
-      // Batch-cast the whole column at once.
-      string error_msg;
-      VectorOperations::TryCast(ctx, str_vec, vec, count, &error_msg, false);
+      lstate.byte_pos = gstate.ranges[range_idx].first;
+      lstate.range_end = gstate.ranges[range_idx].second;
+      lstate.exhausted = false;
     }
-  }
 
-  output.SetCardinality(count);
-  state.current_row += count;
+    // Free previous scratch.
+    if (lstate.scratch) {
+      nsv_scratch_free(lstate.scratch);
+      lstate.scratch = nullptr;
+    }
+
+    // Decode up to STANDARD_VECTOR_SIZE rows via Rust FFI.
+    size_t chunk_len = lstate.range_end - lstate.byte_pos;
+    NsvScratchBuf *scratch = nullptr;
+    size_t bytes_consumed = 0;
+    size_t decoded = nsv_decode_flat(
+        file_buf + lstate.byte_pos, chunk_len, lstate.byte_pos,
+        gstate.col_indices.data(), nc, gstate.needs_unescape.data(),
+        lstate.offsets.data(), lstate.lengths.data(), STANDARD_VECTOR_SIZE,
+        &scratch, &bytes_consumed);
+
+    lstate.scratch = scratch;
+    lstate.byte_pos += bytes_consumed;
+
+    if (decoded > 0) {
+      idx_t count = static_cast<idx_t>(decoded);
+      const uint8_t *scratch_ptr = scratch ? nsv_scratch_ptr(scratch) : nullptr;
+
+      for (idx_t out_col = 0; out_col < output.ColumnCount(); out_col++) {
+        idx_t src_col = gstate.column_ids[out_col];
+        auto &vec = output.data[out_col];
+        const auto &target_type = bind.types[src_col];
+
+        if (target_type == LogicalType::VARCHAR) {
+          // VARCHAR: write strings directly into the output vector.
+          auto str_data = FlatVector::GetData<string_t>(vec);
+          auto &validity = FlatVector::Validity(vec);
+
+          for (idx_t i = 0; i < count; i++) {
+            size_t idx = i * nc + out_col;
+            size_t off = lstate.offsets[idx];
+            size_t len = lstate.lengths[idx];
+            if (len == 0) {
+              validity.SetInvalid(i);
+            } else {
+              const char *cell;
+              if (off & NSV_SCRATCH_BIT) {
+                cell = reinterpret_cast<const char *>(scratch_ptr +
+                                                      (off & ~NSV_SCRATCH_BIT));
+              } else {
+                cell = reinterpret_cast<const char *>(file_buf + off);
+              }
+              str_data[i] = StringVector::AddString(vec, cell, len);
+            }
+          }
+        } else {
+          // Typed columns: populate VARCHAR vector, then batch-cast.
+          Vector str_vec(LogicalType::VARCHAR, count);
+          auto str_data = FlatVector::GetData<string_t>(str_vec);
+          auto &str_validity = FlatVector::Validity(str_vec);
+
+          for (idx_t i = 0; i < count; i++) {
+            size_t idx = i * nc + out_col;
+            size_t off = lstate.offsets[idx];
+            size_t len = lstate.lengths[idx];
+            if (len == 0) {
+              str_validity.SetInvalid(i);
+            } else {
+              const char *cell;
+              if (off & NSV_SCRATCH_BIT) {
+                cell = reinterpret_cast<const char *>(scratch_ptr +
+                                                      (off & ~NSV_SCRATCH_BIT));
+              } else {
+                cell = reinterpret_cast<const char *>(file_buf + off);
+              }
+              str_data[i] = StringVector::AddString(str_vec, cell, len);
+            }
+          }
+
+          string error_msg;
+          VectorOperations::TryCast(ctx, str_vec, vec, count, &error_msg,
+                                    false);
+        }
+      }
+
+      output.SetCardinality(count);
+      return;
+    }
+
+    // decoded == 0: range exhausted, loop to grab next range.
+    lstate.exhausted = true;
+  }
 }
 
 // ── write_nsv (COPY TO) ────────────────────────────────────────────
@@ -438,7 +547,6 @@ static void NSVWriteSink(ExecutionContext &context, FunctionData &bind_data,
     }
   }
 
-  // One FFI call per chunk: escape + transpose + serialize in Rust.
   uint8_t *out = nullptr;
   size_t out_len = 0;
   nsv_write_chunk(cell_ptrs.data(), cell_lens.data(), null_masks.data(), count,
@@ -453,16 +561,15 @@ static void NSVWriteCombine(ExecutionContext &, FunctionData &,
                             GlobalFunctionData &, LocalFunctionData &) {}
 
 static void NSVWriteFinalize(ClientContext &, FunctionData &,
-                             GlobalFunctionData &) {
-  // All data written in NSVWriteSink.
-}
+                             GlobalFunctionData &) {}
 
 // ── Extension registration ──────────────────────────────────────────
 
 static void LoadInternal(ExtensionLoader &loader) {
-  // read_nsv table function with projection pushdown
+  // read_nsv table function with projection pushdown + parallel scan
   TableFunction read_nsv("read_nsv", {LogicalType::VARCHAR}, NSVScan, NSVBind);
-  read_nsv.init_global = NSVInit;
+  read_nsv.init_global = NSVInitGlobal;
+  read_nsv.init_local = NSVInitLocal;
   read_nsv.named_parameters["all_varchar"] = LogicalType::BOOLEAN;
   read_nsv.projection_pushdown = true;
   loader.RegisterFunction(read_nsv);
