@@ -744,7 +744,6 @@ static void NSVWriteSink(ExecutionContext &context, FunctionData &bind_data,
   auto &fs = FileSystem::GetFileSystem(context.client);
 
   if (!state.header_written && bind.write_header) {
-    // Write header via the cell-level encoder (small, one-time cost).
     NsvEncoder *enc = nsv_encoder_new();
     for (auto &name : bind.names) {
       nsv_encoder_push_cell(enc, reinterpret_cast<const uint8_t *>(name.data()),
@@ -819,7 +818,7 @@ static void NSVWriteCombine(ExecutionContext &, FunctionData &,
 
 static void NSVWriteFinalize(ClientContext &, FunctionData &,
                              GlobalFunctionData &) {
-  // All data is written in NSVWriteSink. Nothing to finalize.
+  // All data written in NSVWriteSink.
 }
 
 // ── Extension registration ──────────────────────────────────────────
