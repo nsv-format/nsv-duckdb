@@ -14,10 +14,12 @@
 
 #include "nsv_ffi.h"
 
+#ifndef _WIN32
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 namespace duckdb {
 
@@ -77,10 +79,12 @@ struct NSVBindData : public TableFunctionData {
   //! Pointer to file data (valid for lifetime of this object).
   const uint8_t *file_data = nullptr;
   size_t file_size = 0;
+#ifndef _WIN32
   //! If mmap'd: fd and mmap pointer for cleanup.
   int mmap_fd = -1;
   void *mmap_ptr = nullptr;
-  //! If read into memory: owned buffer (fallback for non-local files).
+#endif
+  //! If read into memory: owned buffer (fallback for non-local/Windows files).
   string read_buffer;
   bool all_varchar = false;
 
@@ -88,12 +92,14 @@ struct NSVBindData : public TableFunctionData {
     if (handle) {
       nsv_free(handle);
     }
+#ifndef _WIN32
     if (mmap_ptr && mmap_ptr != MAP_FAILED) {
       munmap(mmap_ptr, file_size);
     }
     if (mmap_fd >= 0) {
       close(mmap_fd);
     }
+#endif
   }
 };
 
@@ -124,8 +130,9 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
     result->all_varchar = it->second.GetValue<bool>();
   }
 
+#ifndef _WIN32
   // Try mmap for local files (avoids kernel→userspace copy).
-  // Fall back to DuckDB's filesystem for remote files (S3, HTTP, etc.)
+  // Fall back to DuckDB's filesystem for remote/Windows files.
   {
     int fd = open(result->filename.c_str(), O_RDONLY);
     if (fd >= 0) {
@@ -146,6 +153,7 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
       }
     }
   }
+#endif
 
   if (!result->file_data) {
     // Fallback: read via DuckDB's filesystem (supports HTTP, S3, etc.)
