@@ -43,7 +43,18 @@ void nsv_encoder_end_row(NsvEncoder *enc);
  * Caller must free the buffer with nsv_free_buf(). */
 void nsv_encoder_finish(NsvEncoder *enc, uint8_t **out_ptr, size_t *out_len);
 
-/* Free a buffer returned by nsv_encoder_finish(). */
+/* Column-major chunk write. Escapes cells via nsv::escape_bytes (zero-copy
+ * when no escaping needed), then writes row-major NSV output.
+ *
+ * cell_ptrs/cell_lens/null_masks are column-major: index = col * nrows + row.
+ * null_masks[i] = 1 for NULL cells, 0 otherwise.
+ *
+ * Writes result to *out_ptr / *out_len. Caller frees with nsv_free_buf(). */
+void nsv_write_chunk(const uint8_t *const *cell_ptrs, const size_t *cell_lens,
+                     const uint8_t *null_masks, size_t nrows, size_t ncols,
+                     uint8_t **out_ptr, size_t *out_len);
+
+/* Free a buffer returned by nsv_encoder_finish() or nsv_write_chunk(). */
 void nsv_free_buf(uint8_t *ptr, size_t len);
 
 #ifdef __cplusplus

@@ -153,7 +153,83 @@ pub extern "C" fn nsv_encoder_finish(
     }
 }
 
-/// Free a buffer returned by `nsv_encoder_finish`.
+// ── Column-major chunk write (TEMPORARY — belongs in nsv crate) ─────
+//
+// Takes column-major cell data (as DuckDB provides it), escapes each cell
+// via nsv::escape_bytes (Cow::Borrowed when clean, i.e. no copy), then
+// writes row-major NSV output by transposing the escaped references.
+//
+// This avoids per-cell FFI calls and lets escape_bytes skip cells that
+// need no escaping (the common case for numbers, dates, short strings
+// without \n or \\).
+
+/// Write a chunk of rows from column-major cell arrays.
+///
+/// `cell_ptrs[col * nrows + row]` = pointer to cell bytes
+/// `cell_lens[col * nrows + row]` = length of cell bytes
+/// `null_masks[col * nrows + row]` = 1 if NULL, 0 otherwise
+///
+/// Returns an owned buffer containing the NSV output.
+/// Caller must free with `nsv_free_buf`.
+#[no_mangle]
+pub extern "C" fn nsv_write_chunk(
+    cell_ptrs: *const *const u8,
+    cell_lens: *const usize,
+    null_masks: *const u8,
+    nrows: usize,
+    ncols: usize,
+    out_ptr: *mut *mut u8,
+    out_len: *mut usize,
+) {
+    if cell_ptrs.is_null() || cell_lens.is_null() || null_masks.is_null()
+        || out_ptr.is_null() || out_len.is_null()
+        || nrows == 0 || ncols == 0
+    {
+        if !out_ptr.is_null() { unsafe { *out_ptr = std::ptr::null_mut() }; }
+        if !out_len.is_null() { unsafe { *out_len = 0 }; }
+        return;
+    }
+
+    let ptrs = unsafe { std::slice::from_raw_parts(cell_ptrs, ncols * nrows) };
+    let lens = unsafe { std::slice::from_raw_parts(cell_lens, ncols * nrows) };
+    let nulls = unsafe { std::slice::from_raw_parts(null_masks, ncols * nrows) };
+
+    // Phase 1: column-at-a-time escape. For each cell, escape_bytes returns
+    // Cow::Borrowed (zero-copy) when no \n or \\ is present.
+    let mut escaped: Vec<std::borrow::Cow<'_, [u8]>> = Vec::with_capacity(ncols * nrows);
+    for idx in 0..ncols * nrows {
+        if nulls[idx] != 0 {
+            escaped.push(std::borrow::Cow::Borrowed(b""));
+        } else {
+            let cell = unsafe { std::slice::from_raw_parts(ptrs[idx], lens[idx]) };
+            escaped.push(nsv::escape_bytes(cell));
+        }
+    }
+
+    // Phase 2: transpose — write row-major output from column-major escaped data.
+    // Estimate output size: sum of all cell lengths + 2 bytes per cell (\n) + 1 per row (\n).
+    let total_cell_bytes: usize = escaped.iter().map(|c| c.len()).sum();
+    let mut buf = Vec::with_capacity(total_cell_bytes + ncols * nrows + nrows);
+
+    for row in 0..nrows {
+        for col in 0..ncols {
+            let idx = col * nrows + row;
+            buf.extend_from_slice(&escaped[idx]);
+            buf.push(b'\n');
+        }
+        buf.push(b'\n');
+    }
+
+    let len = buf.len();
+    let boxed = buf.into_boxed_slice();
+    let ptr = Box::into_raw(boxed) as *mut u8;
+    unsafe {
+        *out_ptr = ptr;
+        *out_len = len;
+    }
+}
+
+/// Free a buffer returned by `nsv_encoder_finish` or `nsv_write_chunk`.
 #[no_mangle]
 pub extern "C" fn nsv_free_buf(ptr: *mut u8, len: usize) {
     if !ptr.is_null() && len > 0 {
