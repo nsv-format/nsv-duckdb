@@ -53,6 +53,7 @@ dependencies = [
 name = "nsv-ffi"
 version = "0.1.0"
 dependencies = [
+ "memchr",
  "nsv",
 ]
 

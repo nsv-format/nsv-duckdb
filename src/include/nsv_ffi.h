@@ -21,40 +21,56 @@ const char *nsv_sample_cell(const SampleHandle *h, size_t row, size_t col,
                             size_t *out_len);
 void nsv_sample_free(SampleHandle *h);
 
+/* ── Flat-buffer decode (zero-allocation scan) ───────────────────── */
+
+/* High bit flag: when set on an offset, the cell data lives in the scratch
+ * buffer rather than in the original input buffer. */
+#define NSV_SCRATCH_BIT ((size_t)1 << (sizeof(size_t) * 8 - 1))
+
+/* Opaque scratch buffer for unescaped cell data. */
+typedef struct NsvScratchBuf NsvScratchBuf;
+
+/* Get a pointer to the scratch buffer's data. */
+const uint8_t *nsv_scratch_ptr(const NsvScratchBuf *buf);
+
+/* Free a scratch buffer. */
+void nsv_scratch_free(NsvScratchBuf *buf);
+
+/* Decode a chunk of NSV into caller-provided flat arrays.
+ *
+ * out_offsets and out_lengths are row-major: cell (r, c) is at index
+ * r * num_cols + c.  Caller must allocate max_rows * num_cols entries.
+ *
+ * For raw cells, offset is the byte position in the original file buffer.
+ * For cells that were unescaped, offset has NSV_SCRATCH_BIT set and the
+ * remaining bits are the offset into the scratch buffer.
+ *
+ * Returns the number of rows actually decoded (<= max_rows).
+ * *out_scratch receives a handle that must be freed with nsv_scratch_free(). */
+size_t nsv_decode_flat(
+    const uint8_t *ptr, size_t len,
+    size_t input_base_offset,
+    const size_t *col_indices, size_t num_cols,
+    const uint8_t *needs_unescape,
+    size_t *out_offsets, size_t *out_lengths,
+    size_t max_rows,
+    NsvScratchBuf **out_scratch,
+    size_t *out_bytes_consumed);
+
 /* ── Writing ─────────────────────────────────────────────────────── */
 
-/* Opaque encoder handle. */
 typedef struct NsvEncoder NsvEncoder;
 
-/* Create a new encoder. Caller must finish with nsv_encoder_finish(). */
 NsvEncoder *nsv_encoder_new(void);
-
-/* Append a cell (ptr, len) to the current row. */
 void nsv_encoder_push_cell(NsvEncoder *enc, const uint8_t *ptr, size_t len);
-
-/* Append a NULL cell (encoded as the empty string in NSV). */
 void nsv_encoder_push_null(NsvEncoder *enc);
-
-/* Terminate the current row. */
 void nsv_encoder_end_row(NsvEncoder *enc);
-
-/* Finish encoding, write the result to *out_ptr / *out_len.
- * Consumes (frees) the encoder.
- * Caller must free the buffer with nsv_free_buf(). */
 void nsv_encoder_finish(NsvEncoder *enc, uint8_t **out_ptr, size_t *out_len);
 
-/* Column-major chunk write. Escapes cells via nsv::escape_bytes (zero-copy
- * when no escaping needed), then writes row-major NSV output.
- *
- * cell_ptrs/cell_lens/null_masks are column-major: index = col * nrows + row.
- * null_masks[i] = 1 for NULL cells, 0 otherwise.
- *
- * Writes result to *out_ptr / *out_len. Caller frees with nsv_free_buf(). */
 void nsv_write_chunk(const uint8_t *const *cell_ptrs, const size_t *cell_lens,
                      const uint8_t *null_masks, size_t nrows, size_t ncols,
                      uint8_t **out_ptr, size_t *out_len);
 
-/* Free a buffer returned by nsv_encoder_finish() or nsv_write_chunk(). */
 void nsv_free_buf(uint8_t *ptr, size_t len);
 
 #ifdef __cplusplus
