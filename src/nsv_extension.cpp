@@ -183,8 +183,7 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
     if (fd >= 0) {
       struct stat st;
       if (fstat(fd, &st) == 0 && st.st_size > 0) {
-        void *mapped =
-            mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        void *mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
         if (mapped != MAP_FAILED) {
           madvise(mapped, st.st_size, MADV_SEQUENTIAL);
           result->mmap_fd = fd;
@@ -364,8 +363,7 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
 
     if (decoded > 0) {
       idx_t count = static_cast<idx_t>(decoded);
-      const uint8_t *scratch_ptr =
-          scratch ? nsv_scratch_ptr(scratch) : nullptr;
+      const uint8_t *scratch_ptr = scratch ? nsv_scratch_ptr(scratch) : nullptr;
 
       for (idx_t out_col = 0; out_col < output.ColumnCount(); out_col++) {
         idx_t src_col = gstate.column_ids[out_col];
@@ -386,8 +384,8 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
             } else {
               const char *cell;
               if (off & NSV_SCRATCH_BIT) {
-                cell = reinterpret_cast<const char *>(
-                    scratch_ptr + (off & ~NSV_SCRATCH_BIT));
+                cell = reinterpret_cast<const char *>(scratch_ptr +
+                                                      (off & ~NSV_SCRATCH_BIT));
               } else {
                 cell = reinterpret_cast<const char *>(file_buf + off);
               }
@@ -409,8 +407,8 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
             } else {
               const char *cell;
               if (off & NSV_SCRATCH_BIT) {
-                cell = reinterpret_cast<const char *>(
-                    scratch_ptr + (off & ~NSV_SCRATCH_BIT));
+                cell = reinterpret_cast<const char *>(scratch_ptr +
+                                                      (off & ~NSV_SCRATCH_BIT));
               } else {
                 cell = reinterpret_cast<const char *>(file_buf + off);
               }

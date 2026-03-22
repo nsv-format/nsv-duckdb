@@ -47,15 +47,11 @@ void nsv_scratch_free(NsvScratchBuf *buf);
  *
  * Returns the number of rows actually decoded (<= max_rows).
  * *out_scratch receives a handle that must be freed with nsv_scratch_free(). */
-size_t nsv_decode_flat(
-    const uint8_t *ptr, size_t len,
-    size_t input_base_offset,
-    const size_t *col_indices, size_t num_cols,
-    const uint8_t *needs_unescape,
-    size_t *out_offsets, size_t *out_lengths,
-    size_t max_rows,
-    NsvScratchBuf **out_scratch,
-    size_t *out_bytes_consumed);
+size_t nsv_decode_flat(const uint8_t *ptr, size_t len, size_t input_base_offset,
+                       const size_t *col_indices, size_t num_cols,
+                       const uint8_t *needs_unescape, size_t *out_offsets,
+                       size_t *out_lengths, size_t max_rows,
+                       NsvScratchBuf **out_scratch, size_t *out_bytes_consumed);
 
 /* ── Writing ─────────────────────────────────────────────────────── */
 
