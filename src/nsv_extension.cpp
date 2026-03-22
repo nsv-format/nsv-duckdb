@@ -14,6 +14,11 @@
 
 #include "nsv_ffi.h"
 
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace duckdb {
 
 // ── Type detection ──────────────────────────────────────────────────
@@ -69,13 +74,25 @@ struct NSVBindData : public TableFunctionData {
   vector<string> names;
   vector<LogicalType> types;
   NsvHandle *handle = nullptr;
-  //! Raw file bytes kept for nsv_decode_projected at scan init.
-  string raw_buffer;
+  //! Pointer to file data (valid for lifetime of this object).
+  const uint8_t *file_data = nullptr;
+  size_t file_size = 0;
+  //! If mmap'd: fd and mmap pointer for cleanup.
+  int mmap_fd = -1;
+  void *mmap_ptr = nullptr;
+  //! If read into memory: owned buffer (fallback for non-local files).
+  string read_buffer;
   bool all_varchar = false;
 
   ~NSVBindData() {
     if (handle) {
       nsv_free(handle);
+    }
+    if (mmap_ptr && mmap_ptr != MAP_FAILED) {
+      munmap(mmap_ptr, file_size);
+    }
+    if (mmap_fd >= 0) {
+      close(mmap_fd);
     }
   }
 };
@@ -107,18 +124,44 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
     result->all_varchar = it->second.GetValue<bool>();
   }
 
-  // Read file via DuckDB's filesystem (supports local, HTTP, S3, etc.)
-  auto &fs = FileSystem::GetFileSystem(ctx);
-  auto file_handle = fs.OpenFile(result->filename, FileFlags::FILE_FLAGS_READ);
-  auto file_size = fs.GetFileSize(*file_handle);
+  // Try mmap for local files (avoids kernel→userspace copy).
+  // Fall back to DuckDB's filesystem for remote files (S3, HTTP, etc.)
+  {
+    int fd = open(result->filename.c_str(), O_RDONLY);
+    if (fd >= 0) {
+      struct stat st;
+      if (fstat(fd, &st) == 0 && st.st_size > 0) {
+        void *mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        if (mapped != MAP_FAILED) {
+          madvise(mapped, st.st_size, MADV_SEQUENTIAL);
+          result->mmap_fd = fd;
+          result->mmap_ptr = mapped;
+          result->file_data = reinterpret_cast<const uint8_t *>(mapped);
+          result->file_size = static_cast<size_t>(st.st_size);
+        } else {
+          close(fd);
+        }
+      } else {
+        close(fd);
+      }
+    }
+  }
 
-  result->raw_buffer.resize(file_size);
-  fs.Read(*file_handle, (void *)result->raw_buffer.data(), file_size);
+  if (!result->file_data) {
+    // Fallback: read via DuckDB's filesystem (supports HTTP, S3, etc.)
+    auto &fs = FileSystem::GetFileSystem(ctx);
+    auto file_handle =
+        fs.OpenFile(result->filename, FileFlags::FILE_FLAGS_READ);
+    auto file_size = fs.GetFileSize(*file_handle);
+    result->read_buffer.resize(file_size);
+    fs.Read(*file_handle, (void *)result->read_buffer.data(), file_size);
+    result->file_data =
+        reinterpret_cast<const uint8_t *>(result->read_buffer.data());
+    result->file_size = result->read_buffer.size();
+  }
 
   // Eager decode via Rust FFI — headers + type sniffing
-  result->handle =
-      nsv_decode(reinterpret_cast<const uint8_t *>(result->raw_buffer.data()),
-                 result->raw_buffer.size());
+  result->handle = nsv_decode(result->file_data, result->file_size);
   if (!result->handle) {
     throw InvalidInputException("Failed to parse NSV file: %s",
                                 result->filename);
@@ -165,7 +208,7 @@ NSVInit(ClientContext &ctx, TableFunctionInitInput &input) {
   auto &bind = input.bind_data->Cast<NSVBindData>();
   idx_t ncols = bind.names.size();
 
-  if (!bind.raw_buffer.empty() && !state->column_ids.empty() &&
+  if (bind.file_data && bind.file_size > 0 && !state->column_ids.empty() &&
       state->column_ids.size() < ncols) {
     vector<size_t> col_indices;
     col_indices.reserve(state->column_ids.size());
@@ -173,8 +216,7 @@ NSVInit(ClientContext &ctx, TableFunctionInitInput &input) {
       col_indices.push_back(static_cast<size_t>(cid));
     }
     state->projected = nsv_decode_projected(
-        reinterpret_cast<const uint8_t *>(bind.raw_buffer.data()),
-        bind.raw_buffer.size(), col_indices.data(), col_indices.size());
+        bind.file_data, bind.file_size, col_indices.data(), col_indices.size());
   }
 
   return std::move(state);
