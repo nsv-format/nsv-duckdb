@@ -10,7 +10,6 @@
 //!   they point directly into the input buffer (zero-copy via Cow::Borrowed).
 
 use std::borrow::Cow;
-use std::ffi::CString;
 use std::os::raw::c_char;
 
 // ── Sample decode (bind-time: header + type sniffing) ───────────────
@@ -169,12 +168,7 @@ pub extern "C" fn nsv_encoder_finish(
     if enc.is_null() { return; }
     let e = unsafe { Box::from_raw(enc) };
 
-    // Build Vec<Vec<&[u8]>> for nsv::encode_bytes
-    let seqseq: Vec<Vec<&[u8]>> = e.rows.iter().map(|row| {
-        row.iter().map(|cell| cell.as_slice()).collect()
-    }).collect();
-
-    let encoded = nsv::encode_bytes(&seqseq);
+    let encoded = nsv::encode_bytes(&e.rows);
 
     if !out_ptr.is_null() && !out_len.is_null() {
         let len = encoded.len();
