@@ -283,21 +283,7 @@ struct NSVWriteBindData : public TableFunctionData {
 struct NSVWriteGlobalState : public GlobalFunctionData {
   string filename;
   unique_ptr<FileHandle> file_handle;
-  NsvEncoder *encoder = nullptr;
   bool header_written = false;
-
-  ~NSVWriteGlobalState() {
-    // Encoder should have been finished in Finalize, but safety net.
-    if (encoder) {
-      uint8_t *buf = nullptr;
-      size_t len = 0;
-      nsv_encoder_finish(encoder, &buf, &len);
-      if (buf) {
-        nsv_free_buf(buf, len);
-      }
-      encoder = nullptr;
-    }
-  }
 };
 
 struct NSVWriteLocalState : public LocalFunctionData {};
@@ -327,7 +313,6 @@ NSVWriteInitGlobal(ClientContext &ctx, FunctionData &bind_data,
   result->file_handle =
       fs.OpenFile(filename, FileFlags::FILE_FLAGS_WRITE |
                                 FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
-  result->encoder = nsv_encoder_new();
   return std::move(result);
 }
 
@@ -336,62 +321,90 @@ static unique_ptr<LocalFunctionData> NSVWriteInitLocal(ExecutionContext &,
   return make_uniq<NSVWriteLocalState>();
 }
 
-static void NSVWriteSink(ExecutionContext &, FunctionData &bind_data,
+static void NSVWriteSink(ExecutionContext &context, FunctionData &bind_data,
                          GlobalFunctionData &gstate, LocalFunctionData &,
                          DataChunk &input) {
   auto &bind = bind_data.Cast<NSVWriteBindData>();
   auto &state = gstate.Cast<NSVWriteGlobalState>();
 
-  // Write header row on first call
+  auto &fs = FileSystem::GetFileSystem(context.client);
+
   if (!state.header_written && bind.write_header) {
+    NsvEncoder *enc = nsv_encoder_new();
     for (auto &name : bind.names) {
-      nsv_encoder_push_cell(state.encoder,
-                            reinterpret_cast<const uint8_t *>(name.data()),
+      nsv_encoder_push_cell(enc, reinterpret_cast<const uint8_t *>(name.data()),
                             name.size());
     }
-    nsv_encoder_end_row(state.encoder);
+    nsv_encoder_end_row(enc);
+    uint8_t *hdr = nullptr;
+    size_t hdr_len = 0;
+    nsv_encoder_finish(enc, &hdr, &hdr_len);
+    if (hdr && hdr_len > 0) {
+      fs.Write(*state.file_handle, (void *)hdr, hdr_len);
+      nsv_free_buf(hdr, hdr_len);
+    }
     state.header_written = true;
   }
 
   idx_t count = input.size();
-  for (idx_t row = 0; row < count; row++) {
-    for (idx_t col = 0; col < input.ColumnCount(); col++) {
-      auto val = input.GetValue(col, row);
-      if (val.IsNull()) {
-        nsv_encoder_push_null(state.encoder);
+  idx_t ncols = input.ColumnCount();
+
+  // Batch-cast all non-VARCHAR columns to VARCHAR.
+  vector<Vector> cast_vectors;
+  cast_vectors.reserve(ncols);
+  for (idx_t col = 0; col < ncols; col++) {
+    if (bind.types[col] == LogicalType::VARCHAR) {
+      cast_vectors.emplace_back(LogicalType::VARCHAR); // placeholder
+    } else {
+      Vector target(LogicalType::VARCHAR, count);
+      VectorOperations::Cast(context.client, input.data[col], target, count);
+      cast_vectors.push_back(std::move(target));
+    }
+  }
+
+  // Build column-major arrays for nsv_write_chunk.
+  vector<const uint8_t *> cell_ptrs(ncols * count);
+  vector<size_t> cell_lens(ncols * count);
+  vector<uint8_t> null_masks(ncols * count);
+
+  for (idx_t col = 0; col < ncols; col++) {
+    auto &vec = (bind.types[col] == LogicalType::VARCHAR) ? input.data[col]
+                                                          : cast_vectors[col];
+    auto str_data = FlatVector::GetData<string_t>(vec);
+    auto &validity = FlatVector::Validity(vec);
+
+    for (idx_t row = 0; row < count; row++) {
+      idx_t idx = col * count + row;
+      if (!validity.RowIsValid(row)) {
+        cell_ptrs[idx] = nullptr;
+        cell_lens[idx] = 0;
+        null_masks[idx] = 1;
       } else {
-        auto str = val.ToString();
-        nsv_encoder_push_cell(state.encoder,
-                              reinterpret_cast<const uint8_t *>(str.data()),
-                              str.size());
+        cell_ptrs[idx] =
+            reinterpret_cast<const uint8_t *>(str_data[row].GetData());
+        cell_lens[idx] = str_data[row].GetSize();
+        null_masks[idx] = 0;
       }
     }
-    nsv_encoder_end_row(state.encoder);
+  }
+
+  // One FFI call per chunk: escape + transpose + serialize in Rust.
+  uint8_t *out = nullptr;
+  size_t out_len = 0;
+  nsv_write_chunk(cell_ptrs.data(), cell_lens.data(), null_masks.data(), count,
+                  ncols, &out, &out_len);
+  if (out && out_len > 0) {
+    fs.Write(*state.file_handle, (void *)out, out_len);
+    nsv_free_buf(out, out_len);
   }
 }
 
 static void NSVWriteCombine(ExecutionContext &, FunctionData &,
-                            GlobalFunctionData &, LocalFunctionData &) {
-  // single-threaded write, nothing to combine
-}
+                            GlobalFunctionData &, LocalFunctionData &) {}
 
-static void NSVWriteFinalize(ClientContext &ctx, FunctionData &,
-                             GlobalFunctionData &gstate) {
-  auto &state = gstate.Cast<NSVWriteGlobalState>();
-  if (!state.encoder) {
-    return;
-  }
-
-  uint8_t *buf = nullptr;
-  size_t len = 0;
-  nsv_encoder_finish(state.encoder, &buf, &len);
-  state.encoder = nullptr;
-
-  if (buf && len > 0) {
-    auto &fs = FileSystem::GetFileSystem(ctx);
-    fs.Write(*state.file_handle, (void *)buf, len);
-    nsv_free_buf(buf, len);
-  }
+static void NSVWriteFinalize(ClientContext &, FunctionData &,
+                             GlobalFunctionData &) {
+  // All data written in NSVWriteSink.
 }
 
 // ── Extension registration ──────────────────────────────────────────
