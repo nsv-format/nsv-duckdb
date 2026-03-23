@@ -16,7 +16,7 @@ jobs:
     name: Build extension binaries
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.0
     with:
-      duckdb_version: v1.5.0
+      duckdb_version: v1.5.1
       ci_tools_version: v1.5.0
       extension_name: nsv
       extra_toolchains: rust
@@ -25,7 +25,7 @@ jobs:
     name: Code Quality Check
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.0
     with:
-      duckdb_version: v1.5.0
+      duckdb_version: v1.5.1
       ci_tools_version: v1.5.0
       extension_name: nsv
       format_checks: 'format;tidy'
@@ -42,13 +42,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: nsv-v1.5.0-extension-*
+          pattern: nsv-v1.5.1-extension-*
 
       - name: Prepare release assets
         run: |
           mkdir -p release
           for dir in artifacts/*/; do
-            arch=$(basename "$dir" | sed 's/nsv-v1.5.0-extension-//')
+            arch=$(basename "$dir" | sed 's/nsv-v1.5.1-extension-//')
             for file in "$dir"*; do
               if [ -f "$file" ]; then
                 ext="${file##*.}"
