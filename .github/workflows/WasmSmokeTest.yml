@@ -1,0 +1,40 @@
+#
+# Smoke-test the WASM extension build inside duckdb-wasm (Node.js).
+# Triggers after the main distribution pipeline produces artifacts.
+#
+name: WASM Smoke Test
+on:
+  workflow_run:
+    workflows: ["Main Extension Distribution Pipeline"]
+    types: [completed]
+
+jobs:
+  wasm-smoke:
+    name: Smoke-test WASM extension
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download wasm_eh artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nsv-v1.5.1-extension-wasm_eh
+          path: extension
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Inspect artifact
+        run: ls -laR extension/
+
+      - name: Install duckdb-wasm
+        run: npm install @duckdb/duckdb-wasm
+
+      - name: Run smoke test
+        run: node .github/scripts/wasm_smoke_test.mjs extension/
