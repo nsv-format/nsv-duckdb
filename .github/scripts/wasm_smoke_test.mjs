@@ -8,8 +8,8 @@
 //
 
 import * as duckdb from "@duckdb/duckdb-wasm";
+import Worker from "web-worker";
 import { createRequire } from "node:module";
-import { Worker } from "node:worker_threads";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { createServer } from "node:http";
