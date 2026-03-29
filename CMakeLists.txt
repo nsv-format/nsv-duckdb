@@ -27,6 +27,8 @@ elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "windows_amd64")
     set(RUST_TARGET "x86_64-pc-windows-msvc")
 elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "windows_arm64")
     set(RUST_TARGET "aarch64-pc-windows-msvc")
+elseif(DUCKDB_EXPLICIT_PLATFORM MATCHES "^wasm")
+    set(RUST_TARGET "wasm32-unknown-emscripten")
 endif()
 
 # Determine library output path and filename.

@@ -1,0 +1,25 @@
+# name: test/sql/smoke.test
+# description: Smoke test — read_nsv and COPY TO on every platform
+# group: [sql]
+
+require nsv
+
+# ── read_nsv ────────────────────────────────────────────────────────
+
+statement ok
+COPY (SELECT * FROM (VALUES ('a'),('b'),(''),('1'),('2'),(''))) TO '__TEST_DIR__/smoke.nsv' (FORMAT CSV, HEADER false, QUOTE '');
+
+query TT
+SELECT * FROM read_nsv('__TEST_DIR__/smoke.nsv');
+----
+1	2
+
+# ── COPY TO nsv ─────────────────────────────────────────────────────
+
+statement ok
+COPY (SELECT 'hello' AS greet, 42 AS n) TO '__TEST_DIR__/smoke_out.nsv' (FORMAT nsv);
+
+query TI
+SELECT * FROM read_nsv('__TEST_DIR__/smoke_out.nsv');
+----
+hello	42
