@@ -3,51 +3,34 @@
 A [DuckDB](https://duckdb.org/) extension for reading and writing [NSV](https://nsv-format.org) files.
 
 NSV can be used as a simple tabular data format where each cell occupies its own line and rows are separated by blank lines.
-The extension follows CSV conventions (headers, type narrowing) to the extent DuckDB's CSV reader does.
+This extension follows CSV conventions (headers, type narrowing) to the extent DuckDB's CSV reader does.
 
 ## Quick Start
 
 ```sql
+INSTALL nsv FROM community;
 LOAD 'nsv';
 
--- Read an NSV file (types are auto-detected)
+-- Read an NSV file
+-- By default, types are auto-detected, first row interpreted as column names
 SELECT * FROM read_nsv('data.nsv');
+-- Don't interpret the first row as column names
+SELECT * FROM read_nsv('data.nsv', header=false);
+-- Don't infer types
+SELECT * FROM read_nsv('data.nsv', all_varchar=true);
 
 -- Write query results as NSV
 COPY (SELECT * FROM my_table) TO 'output.nsv' (FORMAT nsv);
 ```
 
-> **Local build?** Load the extension from its build path:
-> ```sql
-> LOAD './build/release/extension/nsv/nsv.duckdb_extension';
-> ```
-> On macOS, use an absolute path — see [Building](BUILDING.md).
+## Installation
 
-## Reading
+Community extensions are the simplest way to install, but contain at most one version of the extension at any given time.  
+If you need an arbitrary release from [releases](https://github.com/nsv-format/nsv-duckdb/releases/), download the artefact matching your architecture.  
+The rest is the same process as for locally built artefacts: run `duckdb -unsigned`, then `LOAD '/path/to/nsv.duckdb_extension';` (must be absolute path on macOS).
 
-```sql
--- Types are auto-detected — no CAST needed
-SELECT city, AVG(age) FROM read_nsv('users.nsv') GROUP BY city;
-
--- Joins
-SELECT u.name, o.item
-FROM read_nsv('users.nsv') u
-JOIN read_nsv('orders.nsv') o ON u.id = o.user_id;
-
--- Disable type detection (all columns as VARCHAR)
-SELECT * FROM read_nsv('data.nsv', all_varchar=true);
-```
-
-## Writing
-
-```sql
--- From a table
-COPY my_table TO 'output.nsv' (FORMAT nsv);
-
--- From a query
-COPY (SELECT name, age FROM read_nsv('users.nsv') WHERE age > 25)
-  TO 'filtered.nsv' (FORMAT nsv);
-```
+Locally built artefacts end up in `./build/release/extension/nsv/nsv.duckdb_extension`.  
+Extensions only work with the one version of DuckDB they were built for, so if you need a different combination, you may need to [build it yourself](BUILDING.md).
 
 ## Type Detection
 
