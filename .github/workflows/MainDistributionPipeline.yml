@@ -51,7 +51,7 @@ jobs:
         run: ls -laR extension/
 
       - name: Install duckdb-wasm
-        run: npm install @duckdb/duckdb-wasm web-worker
+        run: npm install @duckdb/duckdb-wasm
 
       - name: Run smoke test
         run: node .github/scripts/wasm_smoke_test.mjs extension/

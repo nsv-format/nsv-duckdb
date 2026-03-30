@@ -8,13 +8,23 @@
 //
 
 import * as duckdb from "@duckdb/duckdb-wasm";
-import Worker from "web-worker";
 import { createRequire } from "node:module";
+import { Worker } from "node:worker_threads";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
 import { createServer } from "node:http";
 
 const require = createRequire(import.meta.url);
+
+// Node.js worker_threads.Worker uses .on(); duckdb-wasm expects
+// the Web Worker .addEventListener() API. Shim it.
+function nodeWorker(path) {
+  const w = new Worker(path);
+  w.addEventListener = (type, fn) =>
+    w.on(type, type === "message" ? (data) => fn({ data }) : fn);
+  w.removeEventListener = (type, fn) => w.off(type, fn);
+  return w;
+}
 
 // ── Locate extension file ──────────────────────────────────────────
 
@@ -61,7 +71,7 @@ const dist = dirname(
 );
 
 const logger = new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING);
-const worker = new Worker(resolve(dist, "duckdb-node-eh.worker.cjs"));
+const worker = nodeWorker(resolve(dist, "duckdb-node-eh.worker.cjs"));
 const db = new duckdb.AsyncDuckDB(logger, worker);
 await db.instantiate(resolve(dist, "duckdb-eh.wasm"));
 
