@@ -51,7 +51,7 @@ jobs:
         run: ls -laR extension/
 
       - name: Install dependencies
-        run: npm install @duckdb/duckdb-wasm@1.33.1-dev41.0 playwright
+        run: npm install @duckdb/duckdb-wasm@1.33.1-dev41.0 playwright esbuild
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium

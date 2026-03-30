@@ -8,10 +8,11 @@
 //
 
 import { createRequire } from "node:module";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
+import { execSync } from "node:child_process";
 
 const require = createRequire(import.meta.url);
 
@@ -33,15 +34,25 @@ if (!extFile) {
 const extBuf = readFileSync(join(artifactDir, extFile));
 console.log(`Extension: ${extFile} (${extBuf.length} bytes)`);
 
-// ── Resolve duckdb-wasm dist path ──────────────────────────────────
+// ── Resolve paths & bundle ─────────────────────────────────────────
 
 const dist = dirname(
   require.resolve("@duckdb/duckdb-wasm/dist/duckdb-eh.wasm"),
 );
 
+// Bundle duckdb-browser.mjs + apache-arrow + transitive deps into one file
+const bundlePath = join(dist, "duckdb-bundle.mjs");
+if (!existsSync(bundlePath)) {
+  console.log("Bundling duckdb-browser.mjs...");
+  execSync(
+    `npx esbuild ${join(dist, "duckdb-browser.mjs")} --bundle --format=esm --outfile=${bundlePath} --external:worker_threads`,
+    { stdio: "inherit" },
+  );
+}
+
 // ── HTTP server ────────────────────────────────────────────────────
 
-let baseUrl; // set after listen
+let baseUrl;
 
 const server = createServer((req, res) => {
   const url = req.url;
@@ -52,6 +63,7 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // Serve duckdb-wasm files (bundle, wasm, worker)
   if (url.startsWith("/dist/")) {
     const filePath = join(dist, url.slice(6));
     try {
@@ -70,6 +82,7 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // Serve the nsv extension for any URL containing "nsv"
   if (url.includes("nsv")) {
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
@@ -139,7 +152,7 @@ const log = document.getElementById("log");
 function print(msg) { log.textContent += msg + "\\n"; console.log(msg); }
 
 try {
-  const duckdb = await import("/dist/duckdb-browser.mjs");
+  const duckdb = await import("/dist/duckdb-bundle.mjs");
   print("duckdb-wasm imported");
 
   const bundle = await duckdb.selectBundle({
