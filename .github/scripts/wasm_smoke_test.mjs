@@ -12,19 +12,11 @@ import { createRequire } from "node:module";
 import { Worker } from "node:worker_threads";
 import { readFileSync, readdirSync } from "node:fs";
 import { dirname, resolve, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 
 const require = createRequire(import.meta.url);
-
-// Node.js worker_threads.Worker uses .on(); duckdb-wasm expects
-// the Web Worker .addEventListener() API. Shim it.
-function nodeWorker(path) {
-  const w = new Worker(path);
-  w.addEventListener = (type, fn) =>
-    w.on(type, type === "message" ? (data) => fn({ data }) : fn);
-  w.removeEventListener = (type, fn) => w.off(type, fn);
-  return w;
-}
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Locate extension file ──────────────────────────────────────────
 
@@ -65,21 +57,27 @@ await new Promise((r) => server.listen(0, "127.0.0.1", r));
 const port = server.address().port;
 
 // ── Initialise duckdb-wasm ─────────────────────────────────────────
+// duckdb-wasm's worker uses globalThis.onmessage/postMessage (Web Worker API).
+// Node.js worker_threads uses parentPort. The bridge file patches both.
 
 const dist = dirname(
   require.resolve("@duckdb/duckdb-wasm/dist/duckdb-eh.wasm"),
 );
+const bridgePath = resolve(__dirname, "duckdb-worker-bridge.cjs");
 
 const logger = new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING);
-const worker = nodeWorker(resolve(dist, "duckdb-node-eh.worker.cjs"));
+const worker = new Worker(bridgePath);
+worker.addEventListener = (type, fn) =>
+  worker.on(type, type === "message" ? (data) => fn({ data }) : fn);
+worker.removeEventListener = (type, fn) => worker.off(type, fn);
 const db = new duckdb.AsyncDuckDB(logger, worker);
 await db.instantiate(resolve(dist, "duckdb-eh.wasm"));
+await db.open({ allowUnsignedExtensions: true });
 
 const conn = await db.connect();
 
 // ── Load extension ─────────────────────────────────────────────────
 
-await conn.query("SET allow_unsigned_extensions = true");
 await conn.query(
   `SET custom_extension_repository = 'http://127.0.0.1:${port}'`,
 );
