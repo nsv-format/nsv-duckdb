@@ -1,22 +1,19 @@
 #!/usr/bin/env node
 //
 // WASM smoke test for the nsv DuckDB extension.
-// Loads the extension into duckdb-wasm via a local HTTP server,
-// then verifies that read_nsv and COPY TO nsv work.
+// Runs in a real browser via Playwright because duckdb-wasm's extension
+// loading (INSTALL/LOAD) requires browser APIs (fetch, WebAssembly).
 //
 // Usage: node wasm_smoke_test.mjs <artifact-dir>
 //
 
-import * as duckdb from "@duckdb/duckdb-wasm";
 import { createRequire } from "node:module";
-import { Worker } from "node:worker_threads";
 import { readFileSync, readdirSync } from "node:fs";
-import { dirname, resolve, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 
 const require = createRequire(import.meta.url);
-const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Locate extension file ──────────────────────────────────────────
 
@@ -36,87 +33,155 @@ if (!extFile) {
 const extBuf = readFileSync(join(artifactDir, extFile));
 console.log(`Extension: ${extFile} (${extBuf.length} bytes)`);
 
-// ── HTTP server for extension loading ──────────────────────────────
-// DuckDB INSTALL fetches from {repo}/v{version}/{platform}/{name}.duckdb_extension.wasm
-// We serve the file for any request that mentions "nsv".
+// ── Resolve duckdb-wasm dist path ──────────────────────────────────
+
+const dist = dirname(
+  require.resolve("@duckdb/duckdb-wasm/dist/duckdb-eh.wasm"),
+);
+
+// ── HTTP server ────────────────────────────────────────────────────
+
+let baseUrl; // set after listen
 
 const server = createServer((req, res) => {
-  if (req.url.includes("nsv")) {
+  const url = req.url;
+
+  if (url === "/") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(buildTestPage(baseUrl));
+    return;
+  }
+
+  if (url.startsWith("/dist/")) {
+    const filePath = join(dist, url.slice(6));
+    try {
+      const data = readFileSync(filePath);
+      const ct = url.endsWith(".wasm")
+        ? "application/wasm"
+        : url.endsWith(".js") || url.endsWith(".mjs")
+          ? "application/javascript"
+          : "application/octet-stream";
+      res.writeHead(200, { "Content-Type": ct });
+      res.end(data);
+    } catch {
+      res.writeHead(404);
+      res.end();
+    }
+    return;
+  }
+
+  if (url.includes("nsv")) {
     res.writeHead(200, {
       "Content-Type": "application/octet-stream",
       "Content-Length": extBuf.length,
     });
     res.end(extBuf);
-  } else {
-    res.writeHead(404);
-    res.end();
+    return;
   }
+
+  res.writeHead(404);
+  res.end();
 });
 
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const port = server.address().port;
+baseUrl = `http://127.0.0.1:${server.address().port}`;
+console.log(`Server: ${baseUrl}`);
 
-// ── Initialise duckdb-wasm ─────────────────────────────────────────
-// duckdb-wasm's worker uses globalThis.onmessage/postMessage (Web Worker API).
-// Node.js worker_threads uses parentPort. The bridge file patches both.
+// ── Run browser via Playwright ─────────────────────────────────────
 
-const dist = dirname(
-  require.resolve("@duckdb/duckdb-wasm/dist/duckdb-eh.wasm"),
-);
-const bridgePath = resolve(__dirname, "duckdb-worker-bridge.cjs");
+const { chromium } = await import("playwright");
+const browser = await chromium.launch();
+const page = await browser.newPage();
 
-const logger = new duckdb.ConsoleLogger(duckdb.LogLevel.WARNING);
-const worker = new Worker(bridgePath);
-worker.addEventListener = (type, fn) =>
-  worker.on(type, type === "message" ? (data) => fn({ data }) : fn);
-worker.removeEventListener = (type, fn) => worker.off(type, fn);
-const db = new duckdb.AsyncDuckDB(logger, worker);
-await db.instantiate(resolve(dist, "duckdb-eh.wasm"));
-await db.open({ allowUnsignedExtensions: true });
+page.on("console", (msg) => console.log(`  [browser] ${msg.text()}`));
+page.on("pageerror", (err) => console.error(`  [browser error] ${err.message}`));
 
-const conn = await db.connect();
+console.log("Navigating to test page...");
+await page.goto(baseUrl, { timeout: 60000, waitUntil: "domcontentloaded" });
 
-// ── Load extension ─────────────────────────────────────────────────
+try {
+  await page.waitForFunction(
+    () => {
+      const t = document.getElementById("log")?.textContent || "";
+      return t.includes("SMOKE_TEST_PASSED") || t.includes("SMOKE_TEST_FAILED");
+    },
+    { timeout: 120000 },
+  );
+} catch {
+  console.error("Test timed out after 120s");
+}
 
-await conn.query(
-  `SET custom_extension_repository = 'http://127.0.0.1:${port}'`,
-);
-await conn.query("INSTALL nsv");
-await conn.query("LOAD nsv");
-console.log("Extension loaded");
+const logContent = await page.textContent("#log");
+console.log("\n--- Test output ---");
+console.log(logContent);
 
-// ── Smoke test: read_nsv ───────────────────────────────────────────
-
-const nsv = "greet\nn\n\nhello\n42\n\n";
-await db.registerFileBuffer("test.nsv", new TextEncoder().encode(nsv));
-
-const r1 = await conn.query("SELECT * FROM read_nsv('test.nsv')");
-const rows1 = r1.toArray();
-console.log("read_nsv:", JSON.stringify(rows1));
-assert(rows1.length === 1, `read_nsv: expected 1 row, got ${rows1.length}`);
-
-// ── Smoke test: COPY TO nsv ───────────────────────────────────────
-
-await conn.query(
-  "COPY (SELECT 'world' AS greet, 7 AS n) TO 'out.nsv' (FORMAT nsv)",
-);
-const r2 = await conn.query("SELECT * FROM read_nsv('out.nsv')");
-const rows2 = r2.toArray();
-console.log("COPY TO round-trip:", JSON.stringify(rows2));
-assert(rows2.length === 1, `COPY TO: expected 1 row, got ${rows2.length}`);
-
-// ── Cleanup ────────────────────────────────────────────────────────
-
-await conn.close();
-await db.terminate();
-worker.terminate();
+await browser.close();
 server.close();
 
-console.log("\nWASM smoke test PASSED");
+if (logContent.includes("SMOKE_TEST_PASSED")) {
+  console.log("\nWASM smoke test PASSED");
+  process.exit(0);
+} else {
+  console.error("\nWASM smoke test FAILED");
+  process.exit(1);
+}
 
-function assert(cond, msg) {
-  if (!cond) {
-    console.error("ASSERTION FAILED:", msg);
-    process.exit(1);
-  }
+// ── Test page generator ────────────────────────────────────────────
+
+function buildTestPage(origin) {
+  return `<!DOCTYPE html>
+<html>
+<head><title>NSV WASM Smoke Test</title></head>
+<body>
+<pre id="log"></pre>
+<script type="module">
+const log = document.getElementById("log");
+function print(msg) { log.textContent += msg + "\\n"; console.log(msg); }
+
+try {
+  const duckdb = await import("/dist/duckdb-browser.mjs");
+  print("duckdb-wasm imported");
+
+  const bundle = await duckdb.selectBundle({
+    eh: {
+      mainModule: "/dist/duckdb-eh.wasm",
+      mainWorker: "/dist/duckdb-browser-eh.worker.js",
+    },
+  });
+
+  const worker = new Worker(bundle.mainWorker);
+  const db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+  await db.instantiate(bundle.mainModule);
+  print("DuckDB instantiated");
+
+  await db.open({ allowUnsignedExtensions: true });
+  const conn = await db.connect();
+
+  await conn.query("SET autoinstall_known_extensions=false");
+  await conn.query("SET autoload_known_extensions=false");
+  await conn.query("SET custom_extension_repository='${origin}'");
+  await conn.query("INSTALL nsv");
+  await conn.query("LOAD nsv");
+  print("LOAD nsv OK");
+
+  const nsvData = new TextEncoder().encode("greet\\nn\\n\\nhello\\n42\\n\\n");
+  await db.registerFileBuffer("test.nsv", nsvData);
+  const r1 = await conn.query("SELECT * FROM read_nsv('test.nsv')");
+  print("read_nsv: " + JSON.stringify(r1.toArray()));
+
+  await conn.query("COPY (SELECT 'world' AS greet, 7 AS n) TO 'out.nsv' (FORMAT nsv)");
+  const r2 = await conn.query("SELECT * FROM read_nsv('out.nsv')");
+  print("COPY TO: " + JSON.stringify(r2.toArray()));
+
+  await conn.close();
+  await db.terminate();
+  worker.terminate();
+  print("SMOKE_TEST_PASSED");
+} catch (e) {
+  print("SMOKE_TEST_FAILED: " + e.message);
+  print(e.stack || "");
+}
+</script>
+</body>
+</html>`;
 }

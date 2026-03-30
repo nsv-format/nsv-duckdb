@@ -50,8 +50,11 @@ jobs:
       - name: Inspect artifact
         run: ls -laR extension/
 
-      - name: Install duckdb-wasm
-        run: npm install @duckdb/duckdb-wasm@1.33.1-dev41.0
+      - name: Install dependencies
+        run: npm install @duckdb/duckdb-wasm@1.33.1-dev41.0 playwright
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
 
       - name: Run smoke test
         run: node .github/scripts/wasm_smoke_test.mjs extension/
