@@ -17,18 +17,19 @@ endif()
 
 # Determine Rust target triple.
 # 1) Rust_CARGO_TARGET is set by the DuckDB CI Makefile for macOS/mingw cross-compilation.
-# 2) Fall back to DUCKDB_EXPLICIT_PLATFORM for musl/windows MSVC.
-# 3) If neither is set, use the host default.
+# 2) EMSCRIPTEN is set by emcmake cmake for WASM builds.
+# 3) Fall back to DUCKDB_EXPLICIT_PLATFORM for musl/windows MSVC.
+# 4) If none match, use the host default.
 if(DEFINED Rust_CARGO_TARGET AND NOT Rust_CARGO_TARGET STREQUAL "")
     set(RUST_TARGET "${Rust_CARGO_TARGET}")
+elseif(EMSCRIPTEN OR DUCKDB_EXPLICIT_PLATFORM MATCHES "^wasm")
+    set(RUST_TARGET "wasm32-unknown-emscripten")
 elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "linux_amd64_musl")
     set(RUST_TARGET "x86_64-unknown-linux-musl")
 elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "windows_amd64")
     set(RUST_TARGET "x86_64-pc-windows-msvc")
 elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "windows_arm64")
     set(RUST_TARGET "aarch64-pc-windows-msvc")
-elseif(DUCKDB_EXPLICIT_PLATFORM MATCHES "^wasm")
-    set(RUST_TARGET "wasm32-unknown-emscripten")
 endif()
 
 # Determine library output path and filename.
@@ -69,6 +70,25 @@ add_custom_target(rust_ffi_build DEPENDS ${RUST_FFI_LIB})
 add_library(rust_ffi STATIC IMPORTED)
 set_target_properties(rust_ffi PROPERTIES IMPORTED_LOCATION ${RUST_FFI_LIB})
 add_dependencies(rust_ffi rust_ffi_build)
+
+# ── WASM: disable wasm-opt ───────────────────────────────────────────
+# wasm-opt strips Rust staticlib symbols from the function table, causing
+# "null function or function signature mismatch" traps at runtime.
+# Replace wasm-opt with a no-op wrapper (copies input to output).
+# Proven by boilstream-extension which uses the same workaround.
+if(EMSCRIPTEN)
+    find_program(WASM_OPT_EXECUTABLE wasm-opt)
+    if(WASM_OPT_EXECUTABLE)
+        get_filename_component(WASM_OPT_DIR ${WASM_OPT_EXECUTABLE} DIRECTORY)
+        message(STATUS "Replacing wasm-opt at ${WASM_OPT_EXECUTABLE} with no-op wrapper")
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E rename ${WASM_OPT_EXECUTABLE} ${WASM_OPT_DIR}/wasm-opt.real)
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/wasm-opt-wrapper.sh
+                ${WASM_OPT_EXECUTABLE})
+    endif()
+endif()
 
 # ── Extension ────────────────────────────────────────────────────────
 set(EXTENSION_SOURCES src/nsv_extension.cpp)
