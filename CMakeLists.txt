@@ -71,6 +71,25 @@ add_library(rust_ffi STATIC IMPORTED)
 set_target_properties(rust_ffi PROPERTIES IMPORTED_LOCATION ${RUST_FFI_LIB})
 add_dependencies(rust_ffi rust_ffi_build)
 
+# ── WASM: disable wasm-opt ───────────────────────────────────────────
+# wasm-opt strips Rust staticlib symbols from the function table, causing
+# "null function or function signature mismatch" traps at runtime.
+# Replace wasm-opt with a no-op wrapper (copies input to output).
+# Proven by boilstream-extension which uses the same workaround.
+if(EMSCRIPTEN)
+    find_program(WASM_OPT_EXECUTABLE wasm-opt)
+    if(WASM_OPT_EXECUTABLE)
+        get_filename_component(WASM_OPT_DIR ${WASM_OPT_EXECUTABLE} DIRECTORY)
+        message(STATUS "Replacing wasm-opt at ${WASM_OPT_EXECUTABLE} with no-op wrapper")
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E rename ${WASM_OPT_EXECUTABLE} ${WASM_OPT_DIR}/wasm-opt.real)
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E copy
+                ${CMAKE_CURRENT_SOURCE_DIR}/scripts/wasm-opt-wrapper.sh
+                ${WASM_OPT_EXECUTABLE})
+    endif()
+endif()
+
 # ── Extension ────────────────────────────────────────────────────────
 set(EXTENSION_SOURCES src/nsv_extension.cpp)
 

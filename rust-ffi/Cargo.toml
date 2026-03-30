@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-nsv = { path = "nsv-vendored", default-features = false }
+nsv = "0.0.11"
 
 [lib]
 crate-type = ["staticlib"]
