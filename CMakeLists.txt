@@ -17,10 +17,13 @@ endif()
 
 # Determine Rust target triple.
 # 1) Rust_CARGO_TARGET is set by the DuckDB CI Makefile for macOS/mingw cross-compilation.
-# 2) Fall back to DUCKDB_EXPLICIT_PLATFORM for musl/windows MSVC.
-# 3) If neither is set, use the host default.
+# 2) EMSCRIPTEN is set by emcmake cmake for WASM builds.
+# 3) Fall back to DUCKDB_EXPLICIT_PLATFORM for musl/windows MSVC.
+# 4) If none match, use the host default.
 if(DEFINED Rust_CARGO_TARGET AND NOT Rust_CARGO_TARGET STREQUAL "")
     set(RUST_TARGET "${Rust_CARGO_TARGET}")
+elseif(EMSCRIPTEN OR DUCKDB_EXPLICIT_PLATFORM MATCHES "^wasm")
+    set(RUST_TARGET "wasm32-unknown-emscripten")
 elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "linux_amd64_musl")
     set(RUST_TARGET "x86_64-unknown-linux-musl")
 elseif(DUCKDB_EXPLICIT_PLATFORM STREQUAL "windows_amd64")
@@ -47,9 +50,12 @@ message(STATUS "Rust FFI target: ${RUST_TARGET}")
 message(STATUS "Rust FFI lib: ${RUST_FFI_LIB}")
 
 if(DEFINED RUST_TARGET)
+    if(EMSCRIPTEN OR DUCKDB_EXPLICIT_PLATFORM MATCHES "^wasm")
+        set(CARGO_EXTRA_FLAGS "--no-default-features")
+    endif()
     add_custom_command(
         OUTPUT ${RUST_FFI_LIB}
-        COMMAND ${CARGO_EXECUTABLE} build --release --target ${RUST_TARGET}
+        COMMAND ${CARGO_EXECUTABLE} build --release --target ${RUST_TARGET} ${CARGO_EXTRA_FLAGS}
         WORKING_DIRECTORY ${RUST_FFI_DIR}
         COMMENT "Building Rust FFI (target: ${RUST_TARGET})"
     )
@@ -70,6 +76,13 @@ add_dependencies(rust_ffi rust_ffi_build)
 
 # ── Extension ────────────────────────────────────────────────────────
 set(EXTENSION_SOURCES src/nsv_extension.cpp)
+
+# For WASM builds, DuckDB's extension_build_tools.cmake uses
+# DUCKDB_EXTENSION_<NAME>_LINKED_LIBS in the emcc post-build link step.
+# This must be set BEFORE build_loadable_extension() which reads it.
+if(EMSCRIPTEN)
+    set(DUCKDB_EXTENSION_NSV_LINKED_LIBS "${RUST_FFI_LIB}" CACHE STRING "" FORCE)
+endif()
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})

@@ -548,6 +548,7 @@ static void NSVWriteSink(ExecutionContext &context, FunctionData &bind_data,
   for (idx_t col = 0; col < ncols; col++) {
     auto &vec = (bind.types[col] == LogicalType::VARCHAR) ? input.data[col]
                                                           : cast_vectors[col];
+    vec.Flatten(count);
     auto str_data = FlatVector::GetData<string_t>(vec);
     auto &validity = FlatVector::Validity(vec);
 
