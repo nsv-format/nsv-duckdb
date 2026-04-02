@@ -74,6 +74,13 @@ add_dependencies(rust_ffi rust_ffi_build)
 # ── Extension ────────────────────────────────────────────────────────
 set(EXTENSION_SOURCES src/nsv_extension.cpp)
 
+# For WASM builds, DuckDB's extension_build_tools.cmake uses
+# DUCKDB_EXTENSION_<NAME>_LINKED_LIBS in the emcc post-build link step.
+# This must be set BEFORE build_loadable_extension() which reads it.
+if(EMSCRIPTEN)
+    set(DUCKDB_EXTENSION_NSV_LINKED_LIBS "${RUST_FFI_LIB}" CACHE STRING "" FORCE)
+endif()
+
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
 

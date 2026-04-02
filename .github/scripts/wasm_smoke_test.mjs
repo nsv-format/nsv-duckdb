@@ -179,11 +179,11 @@ try {
 
   const nsvData = new TextEncoder().encode("greet\\nn\\n\\nhello\\n42\\n\\n");
   await db.registerFileBuffer("test.nsv", nsvData);
-  const r1 = await conn.query("SELECT * FROM read_nsv('test.nsv')");
+  const r1 = await conn.query("SELECT * FROM read_nsv('test.nsv', all_varchar=true)");
   print("read_nsv: " + JSON.stringify(r1.toArray()));
 
-  await conn.query("COPY (SELECT 'world' AS greet, 7 AS n) TO 'out.nsv' (FORMAT nsv)");
-  const r2 = await conn.query("SELECT * FROM read_nsv('out.nsv')");
+  await conn.query("COPY (SELECT 'world' AS greet, '7' AS n) TO 'out.nsv' (FORMAT nsv)");
+  const r2 = await conn.query("SELECT * FROM read_nsv('out.nsv', all_varchar=true)");
   print("COPY TO: " + JSON.stringify(r2.toArray()));
 
   await conn.close();
