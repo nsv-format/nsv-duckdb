@@ -50,9 +50,12 @@ message(STATUS "Rust FFI target: ${RUST_TARGET}")
 message(STATUS "Rust FFI lib: ${RUST_FFI_LIB}")
 
 if(DEFINED RUST_TARGET)
+    if(EMSCRIPTEN OR DUCKDB_EXPLICIT_PLATFORM MATCHES "^wasm")
+        set(CARGO_EXTRA_FLAGS "--no-default-features")
+    endif()
     add_custom_command(
         OUTPUT ${RUST_FFI_LIB}
-        COMMAND ${CARGO_EXECUTABLE} build --release --target ${RUST_TARGET}
+        COMMAND ${CARGO_EXECUTABLE} build --release --target ${RUST_TARGET} ${CARGO_EXTRA_FLAGS}
         WORKING_DIRECTORY ${RUST_FFI_DIR}
         COMMENT "Building Rust FFI (target: ${RUST_TARGET})"
     )
