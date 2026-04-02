@@ -3,7 +3,10 @@ name = "nsv-ffi"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
+[target.'cfg(not(target_os = "emscripten"))'.dependencies]
+nsv = { version = "0.0.12" }
+
+[target.'cfg(target_os = "emscripten")'.dependencies]
 nsv = { version = "0.0.12", default-features = false }
 
 [lib]
