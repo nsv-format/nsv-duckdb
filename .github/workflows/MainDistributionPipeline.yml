@@ -30,6 +30,35 @@ jobs:
       extension_name: nsv
       format_checks: 'format;tidy'
 
+  wasm-smoke-test:
+    name: WASM smoke test
+    needs: duckdb-stable-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download wasm_eh artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nsv-v1.5.1-extension-wasm_eh
+          path: extension
+
+      - name: Inspect artifact
+        run: ls -laR extension/
+
+      - name: Install dependencies
+        run: npm install @duckdb/duckdb-wasm@1.33.1-dev41.0 playwright esbuild
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run smoke test
+        run: node .github/scripts/wasm_smoke_test.mjs extension/
+
   release:
     name: Create GitHub Release
     needs: duckdb-stable-build
