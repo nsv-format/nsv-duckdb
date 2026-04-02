@@ -3,8 +3,12 @@ name = "nsv-ffi"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["parallel"]
+parallel = ["nsv/parallel"]
+
 [dependencies]
-nsv = "0.0.11"
+nsv = { version = "0.0.12", default-features = false }
 
 [lib]
 crate-type = ["staticlib"]
