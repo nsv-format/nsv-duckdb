@@ -11,3 +11,9 @@ benchmarks/
 
 # Profiling artifacts
 cachegrind.out.*
+
+# npm (WASM smoke test deps)
+node_modules/
+package.json
+package-lock.json
+.cache/
