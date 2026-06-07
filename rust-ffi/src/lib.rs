@@ -397,11 +397,6 @@ pub extern "C" fn nsv_write_chunk(
     let mut escaped: Vec<std::borrow::Cow<'_, [u8]>> = Vec::with_capacity(ncols * nrows);
     for idx in 0..ncols * nrows {
         if nulls[idx] != 0 {
-            // A NULL writes to the empty-cell token (5C 0A), the same bytes
-            // escape_bytes(b"") produces. A bare empty cell (0A) is structurally
-            // a row break and would split the row. NULL and empty-string both
-            // round-trip back to NULL (CSV parity); preserving the distinction
-            // is an ENSV/typed-layer concern.
             escaped.push(std::borrow::Cow::Borrowed(b"\\"));
         } else {
             let cell = unsafe { std::slice::from_raw_parts(ptrs[idx], lens[idx]) };
@@ -630,9 +625,7 @@ mod tests {
 
     #[test]
     fn test_write_chunk_interior_null() {
-        // Row [a, NULL, b], column-major (nrows=1, ncols=3). The interior NULL
-        // must become the empty-cell token (5C 0A), not a bare 0A which would
-        // split the row.
+        // column-major [a, NULL, b]
         let a = b"a";
         let b = b"b";
         let ptrs: [*const u8; 3] = [a.as_ptr(), std::ptr::null(), b.as_ptr()];
@@ -657,7 +650,6 @@ mod tests {
 
     #[test]
     fn test_write_chunk_null_matches_empty_string() {
-        // A NULL and an empty string must encode to identical bytes.
         let mk = |is_null: bool| {
             let empty = b"";
             let ptrs: [*const u8; 1] = [if is_null { std::ptr::null() } else { empty.as_ptr() }];
