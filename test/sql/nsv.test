@@ -272,6 +272,56 @@ SELECT key FROM read_nsv('__TEST_DIR__/nulls.nsv') WHERE val IS NULL;
 ----
 b
 
+# ── COPY TO nsv: interior NULL / empty cell uses the empty-cell token ──
+# An interior NULL/empty cell must be the empty-cell token, not a bare 0A (which
+# splits the row). Byte-exact; rendered \=B \n=N -> header a,b,c, data a,<tok>,b.
+
+statement ok
+CREATE TABLE interior_null(a VARCHAR, b VARCHAR, c VARCHAR);
+
+statement ok
+INSERT INTO interior_null VALUES ('a', NULL, 'b');
+
+statement ok
+COPY interior_null TO '__TEST_DIR__/interior_null.nsv' (FORMAT nsv);
+
+query T
+SELECT replace(replace(content, chr(92), 'B'), chr(10), 'N') FROM read_text('__TEST_DIR__/interior_null.nsv');
+----
+aNbNcNNaNBNbNN
+
+# must read back as one row, not split into two
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/interior_null.nsv');
+----
+1
+
+# empty string encodes identically to NULL
+statement ok
+CREATE TABLE interior_empty(a VARCHAR, b VARCHAR, c VARCHAR);
+
+statement ok
+INSERT INTO interior_empty VALUES ('a', '', 'b');
+
+statement ok
+COPY interior_empty TO '__TEST_DIR__/interior_empty.nsv' (FORMAT nsv);
+
+query T
+SELECT replace(replace(content, chr(92), 'B'), chr(10), 'N') FROM read_text('__TEST_DIR__/interior_empty.nsv');
+----
+aNbNcNNaNBNbNN
+
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/interior_empty.nsv');
+----
+1
+
+statement ok
+DROP TABLE interior_null;
+
+statement ok
+DROP TABLE interior_empty;
+
 # ── read_nsv: header=false ─────────────────────────────────────────
 
 # With header=false, first row becomes data and columns are column0, column1, ...
