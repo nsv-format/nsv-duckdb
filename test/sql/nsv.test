@@ -272,6 +272,65 @@ SELECT key FROM read_nsv('__TEST_DIR__/nulls.nsv') WHERE val IS NULL;
 ----
 b
 
+# ── COPY TO nsv: interior NULL / empty cell uses the empty-cell token ──
+
+# Regression: a NULL (or empty string) in the *interior* of a row must be
+# written as the empty-cell token (bytes 5C 0A), never a bare 0A. A bare 0A
+# is structurally a row break, so it would split the row. The IS NOT NULL
+# filter above masks this because it happens to discard the corrupted rows.
+# These assertions are byte-exact.
+
+statement ok
+CREATE TABLE interior_null(a VARCHAR, b VARCHAR, c VARCHAR);
+
+statement ok
+INSERT INTO interior_null VALUES ('a', NULL, 'b');
+
+statement ok
+COPY interior_null TO '__TEST_DIR__/interior_null.nsv' (FORMAT nsv);
+
+# Byte-exact written file: header row a,b,c then data row a,<empty token>,b.
+# Render \ (chr 92) as 'B' and \n (chr 10) as 'N' to keep it on one line:
+#   a \n b \n c \n \n   a \n \ \n b \n \n   ->   aNbNcNN aNBNbNN
+query T
+SELECT replace(replace(content, chr(92), 'B'), chr(10), 'N') FROM read_text('__TEST_DIR__/interior_null.nsv');
+----
+aNbNcNNaNBNbNN
+
+# The interior NULL must not split the row: exactly one data row reads back.
+# With the bug (bare 0A) the data is "a\n\nb\n\n", which decodes to two rows.
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/interior_null.nsv');
+----
+1
+
+# An interior empty string produces the identical bytes. NULL and '' both map
+# to the empty-cell token and both read back as NULL (CSV parity).
+statement ok
+CREATE TABLE interior_empty(a VARCHAR, b VARCHAR, c VARCHAR);
+
+statement ok
+INSERT INTO interior_empty VALUES ('a', '', 'b');
+
+statement ok
+COPY interior_empty TO '__TEST_DIR__/interior_empty.nsv' (FORMAT nsv);
+
+query T
+SELECT replace(replace(content, chr(92), 'B'), chr(10), 'N') FROM read_text('__TEST_DIR__/interior_empty.nsv');
+----
+aNbNcNNaNBNbNN
+
+query I
+SELECT COUNT(*) FROM read_nsv('__TEST_DIR__/interior_empty.nsv');
+----
+1
+
+statement ok
+DROP TABLE interior_null;
+
+statement ok
+DROP TABLE interior_empty;
+
 # ── read_nsv: header=false ─────────────────────────────────────────
 
 # With header=false, first row becomes data and columns are column0, column1, ...

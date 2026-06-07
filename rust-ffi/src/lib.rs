@@ -397,7 +397,12 @@ pub extern "C" fn nsv_write_chunk(
     let mut escaped: Vec<std::borrow::Cow<'_, [u8]>> = Vec::with_capacity(ncols * nrows);
     for idx in 0..ncols * nrows {
         if nulls[idx] != 0 {
-            escaped.push(std::borrow::Cow::Borrowed(b""));
+            // A NULL writes to the empty-cell token (5C 0A), the same bytes
+            // escape_bytes(b"") produces. A bare empty cell (0A) is structurally
+            // a row break and would split the row. NULL and empty-string both
+            // round-trip back to NULL (CSV parity); preserving the distinction
+            // is an ENSV/typed-layer concern.
+            escaped.push(std::borrow::Cow::Borrowed(b"\\"));
         } else {
             let cell = unsafe { std::slice::from_raw_parts(ptrs[idx], lens[idx]) };
             escaped.push(nsv::escape_bytes(cell));
@@ -621,5 +626,51 @@ mod tests {
         let bytes = unsafe { std::slice::from_raw_parts(out_ptr, out_len) };
         assert_eq!(bytes, b"name\nage\n\nAlice\n30\n\n");
         nsv_free_buf(out_ptr, out_len);
+    }
+
+    #[test]
+    fn test_write_chunk_interior_null() {
+        // Row [a, NULL, b], column-major (nrows=1, ncols=3). The interior NULL
+        // must become the empty-cell token (5C 0A), not a bare 0A which would
+        // split the row.
+        let a = b"a";
+        let b = b"b";
+        let ptrs: [*const u8; 3] = [a.as_ptr(), std::ptr::null(), b.as_ptr()];
+        let lens: [usize; 3] = [1, 0, 1];
+        let nulls: [u8; 3] = [0, 1, 0];
+
+        let mut out_ptr: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        nsv_write_chunk(
+            ptrs.as_ptr(),
+            lens.as_ptr(),
+            nulls.as_ptr(),
+            1,
+            3,
+            &mut out_ptr,
+            &mut out_len,
+        );
+        let bytes = unsafe { std::slice::from_raw_parts(out_ptr, out_len) };
+        assert_eq!(bytes, b"a\n\\\nb\n\n");
+        nsv_free_buf(out_ptr, out_len);
+    }
+
+    #[test]
+    fn test_write_chunk_null_matches_empty_string() {
+        // A NULL and an empty string must encode to identical bytes.
+        let mk = |is_null: bool| {
+            let empty = b"";
+            let ptrs: [*const u8; 1] = [if is_null { std::ptr::null() } else { empty.as_ptr() }];
+            let lens: [usize; 1] = [0];
+            let nulls: [u8; 1] = [is_null as u8];
+            let mut out_ptr: *mut u8 = std::ptr::null_mut();
+            let mut out_len: usize = 0;
+            nsv_write_chunk(ptrs.as_ptr(), lens.as_ptr(), nulls.as_ptr(), 1, 1, &mut out_ptr, &mut out_len);
+            let v = unsafe { std::slice::from_raw_parts(out_ptr, out_len) }.to_vec();
+            nsv_free_buf(out_ptr, out_len);
+            v
+        };
+        assert_eq!(mk(true), b"\\\n\n");
+        assert_eq!(mk(false), b"\\\n\n");
     }
 }
