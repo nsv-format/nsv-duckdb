@@ -1,17 +1,10 @@
 #!/bin/sh
 # Assert every function the nsv extension registers has a description.
-#
-# Snapshots duckdb_functions() before and after LOAD, diffs them,
-# and fails if any new row has a NULL description.
-#
-# Usage: check_function_docs.sh <duckdb-binary> <extension-path>
-
 set -e
 
-duckdb="${1:?Usage: check_function_docs.sh <duckdb> <extension>}"
-ext="${2:?Usage: check_function_docs.sh <duckdb> <extension>}"
+ext="${1:?path to built nsv.duckdb_extension}"
 
-undocumented=$("$duckdb" -unsigned -noheader -csv :memory: <<SQL
+undocumented=$(duckdb -unsigned -noheader -csv :memory: <<SQL
 CREATE TEMP TABLE pre AS
   SELECT function_name, function_type, parameters
   FROM duckdb_functions();
@@ -33,9 +26,9 @@ SQL
 )
 
 if [ -n "$undocumented" ]; then
-    echo "Functions registered by nsv extension without a description:"
+    echo "nsv functions without a description:"
     echo "$undocumented"
     exit 1
 fi
 
-echo "All extension functions have descriptions."
+echo "All nsv functions have descriptions."

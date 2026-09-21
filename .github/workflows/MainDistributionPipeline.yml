@@ -76,12 +76,12 @@ jobs:
       - name: Install DuckDB CLI
         run: |
           wget -q https://github.com/duckdb/duckdb/releases/download/v1.5.1/duckdb_cli-linux-amd64.zip
-          unzip -q duckdb_cli-linux-amd64.zip
+          unzip -q duckdb_cli-linux-amd64.zip -d /usr/local/bin
 
       - name: Check function documentation
         run: |
           ext=$(find extension/ -name '*.duckdb_extension' -print -quit)
-          .github/scripts/check_function_docs.sh ./duckdb "$ext"
+          .github/scripts/check_function_docs.sh "$ext"
 
   release:
     name: Create GitHub Release
