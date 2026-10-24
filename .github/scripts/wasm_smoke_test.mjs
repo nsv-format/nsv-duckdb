@@ -37,7 +37,7 @@ console.log(`Extension: ${extFile} (${extBuf.length} bytes)`);
 // ── Resolve paths & bundle ─────────────────────────────────────────
 
 const dist = dirname(
-  require.resolve("@duckdb/duckdb-wasm/dist/duckdb-eh.wasm"),
+  require.resolve("@duckdb/duckdb-wasm/dist/duckdb-base.wasm"),
 );
 
 // Bundle duckdb-browser.mjs + apache-arrow + transitive deps into one file
@@ -156,9 +156,9 @@ try {
   print("duckdb-wasm imported");
 
   const bundle = await duckdb.selectBundle({
-    eh: {
-      mainModule: "/dist/duckdb-eh.wasm",
-      mainWorker: "/dist/duckdb-browser-eh.worker.js",
+    base: {
+      mainModule: "/dist/duckdb-base.wasm",
+      mainWorker: "/dist/duckdb-browser-base.worker.js",
     },
   });
 
