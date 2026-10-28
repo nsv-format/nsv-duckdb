@@ -172,6 +172,9 @@ try {
 
   await conn.query("SET autoinstall_known_extensions=false");
   await conn.query("SET autoload_known_extensions=false");
+  // The only duckdb-wasm build on v2.0.0 (1.33.1-dev110.0) is untagged and
+  // reports its version as the commit hash (d54cbbe3df), not v2.0.0.
+  await conn.query("SET allow_extensions_metadata_mismatch=true");
   await conn.query("SET custom_extension_repository='${origin}'");
   await conn.query("INSTALL nsv");
   await conn.query("LOAD nsv");
