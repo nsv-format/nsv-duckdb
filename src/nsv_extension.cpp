@@ -590,7 +590,10 @@ static void NSVWriteFinalize(ClientContext &, FunctionData &,
 
 static void LoadInternal(ExtensionLoader &loader) {
   // read_nsv table function with projection pushdown + parallel scan
-  TableFunction read_nsv("read_nsv", {LogicalType::VARCHAR}, NSVScan, NSVBind);
+  TableFunction read_nsv(
+      "read_nsv",
+      FunctionSignature().AddPositionalOnly("path", LogicalType::VARCHAR),
+      NSVScan, NSVBind);
   read_nsv.init_global = NSVInitGlobal;
   read_nsv.init_local = NSVInitLocal;
   read_nsv.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
@@ -598,7 +601,22 @@ static void LoadInternal(ExtensionLoader &loader) {
         .Add("header", LogicalType::BOOLEAN);
   });
   read_nsv.projection_pushdown = true;
-  loader.RegisterFunction(read_nsv);
+
+  // Bare RegisterFunction(TableFunction) has nowhere to put a description;
+  // it registers with ALTER_ON_CONFLICT, so keep that here.
+  CreateTableFunctionInfo read_nsv_info(std::move(read_nsv));
+  read_nsv_info.on_conflict = OnCreateConflict::ALTER_ON_CONFLICT;
+  FunctionDescription read_nsv_desc;
+  read_nsv_desc.description =
+      "Reads an NSV file as a table. The first row is the header unless "
+      "header=false, in which case columns are named column0, column1, ... "
+      "Column types are detected from the first 1000 rows unless "
+      "all_varchar=true.";
+  read_nsv_desc.examples = {
+      "SELECT * FROM read_nsv('data.nsv');",
+      "SELECT * FROM read_nsv('data.nsv', header=false, all_varchar=true);"};
+  read_nsv_info.descriptions.push_back(std::move(read_nsv_desc));
+  loader.RegisterFunction(std::move(read_nsv_info));
 
   // COPY TO ... (FORMAT nsv)
   CopyFunction nsv_copy("nsv");
