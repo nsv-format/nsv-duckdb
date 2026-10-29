@@ -58,9 +58,8 @@ static LogicalType DetectColumnType(ClientContext &ctx, SampleHandle *data,
       has_value = true;
 
       Value str_val(string(cell, cell_len));
-      Value result_val;
       string error_msg;
-      if (!str_val.TryCastAs(ctx, candidate, result_val, &error_msg, true)) {
+      if (!str_val.TryCastAs(ctx, candidate, &error_msg, true)) {
         all_ok = false;
       }
     }
@@ -167,7 +166,7 @@ struct NSVLocalState : public LocalTableFunctionState {
 static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
                                         TableFunctionBindInput &input,
                                         vector<LogicalType> &return_types,
-                                        vector<string> &names) {
+                                        vector<Identifier> &names) {
   auto result = make_uniq<NSVBindData>();
   result->filename = input.inputs[0].GetValue<string>();
 
@@ -272,7 +271,9 @@ static unique_ptr<FunctionData> NSVBind(ClientContext &ctx,
 
   nsv_sample_free(sample);
 
-  names = result->names;
+  for (auto &name : result->names) {
+    names.emplace_back(name);
+  }
   return_types = result->types;
   return std::move(result);
 }
@@ -353,7 +354,7 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
     if (lstate.exhausted || lstate.byte_pos >= lstate.range_end) {
       idx_t range_idx = gstate.next_range.fetch_add(1);
       if (range_idx >= static_cast<idx_t>(gstate.ranges.size())) {
-        output.SetCardinality(0);
+        output.SetChildCardinality(0);
         return;
       }
       lstate.byte_pos = gstate.ranges[range_idx].first;
@@ -391,8 +392,8 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
 
         if (target_type == LogicalType::VARCHAR) {
           // VARCHAR: write strings directly into the output vector.
-          auto str_data = FlatVector::GetData<string_t>(vec);
-          auto &validity = FlatVector::Validity(vec);
+          auto str_data = FlatVector::GetDataMutable<string_t>(vec);
+          auto &validity = FlatVector::ValidityMutable(vec);
 
           for (idx_t i = 0; i < count; i++) {
             size_t idx = i * nc + out_col;
@@ -414,8 +415,8 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
         } else {
           // Typed columns: populate VARCHAR vector, then batch-cast.
           Vector str_vec(LogicalType::VARCHAR, count);
-          auto str_data = FlatVector::GetData<string_t>(str_vec);
-          auto &str_validity = FlatVector::Validity(str_vec);
+          auto str_data = FlatVector::GetDataMutable<string_t>(str_vec);
+          auto &str_validity = FlatVector::ValidityMutable(str_vec);
 
           for (idx_t i = 0; i < count; i++) {
             size_t idx = i * nc + out_col;
@@ -441,7 +442,7 @@ static void NSVScan(ClientContext &ctx, TableFunctionInput &input,
         }
       }
 
-      output.SetCardinality(count);
+      output.SetChildCardinality(count);
       return;
     }
 
@@ -468,10 +469,12 @@ struct NSVWriteLocalState : public LocalFunctionData {};
 
 static unique_ptr<FunctionData> NSVWriteBind(ClientContext &,
                                              CopyFunctionBindInput &input,
-                                             const vector<string> &names,
+                                             const vector<Identifier> &names,
                                              const vector<LogicalType> &types) {
   auto result = make_uniq<NSVWriteBindData>();
-  result->names = names;
+  for (auto &name : names) {
+    result->names.push_back(name.GetIdentifierName());
+  }
   result->types = types;
 
   auto it = input.info.options.find("header");
@@ -548,7 +551,7 @@ static void NSVWriteSink(ExecutionContext &context, FunctionData &bind_data,
   for (idx_t col = 0; col < ncols; col++) {
     auto &vec = (bind.types[col] == LogicalType::VARCHAR) ? input.data[col]
                                                           : cast_vectors[col];
-    vec.Flatten(count);
+    vec.Flatten();
     auto str_data = FlatVector::GetData<string_t>(vec);
     auto &validity = FlatVector::Validity(vec);
 
@@ -590,8 +593,10 @@ static void LoadInternal(ExtensionLoader &loader) {
   TableFunction read_nsv("read_nsv", {LogicalType::VARCHAR}, NSVScan, NSVBind);
   read_nsv.init_global = NSVInitGlobal;
   read_nsv.init_local = NSVInitLocal;
-  read_nsv.named_parameters["all_varchar"] = LogicalType::BOOLEAN;
-  read_nsv.named_parameters["header"] = LogicalType::BOOLEAN;
+  read_nsv.GetSignature().WithTypedKwargs("options", [](TypedKwargs &options) {
+    options.Add("all_varchar", LogicalType::BOOLEAN)
+        .Add("header", LogicalType::BOOLEAN);
+  });
   read_nsv.projection_pushdown = true;
   loader.RegisterFunction(read_nsv);
 

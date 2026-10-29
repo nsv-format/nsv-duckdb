@@ -14,19 +14,19 @@ concurrency:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.0
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v2.0-cyanoptera
     with:
-      duckdb_version: v1.5.1
-      ci_tools_version: v1.5.0
+      duckdb_version: v2.0.0
+      ci_tools_version: v2.0-cyanoptera
       extension_name: nsv
       extra_toolchains: rust
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.0
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v2.0-cyanoptera
     with:
-      duckdb_version: v1.5.1
-      ci_tools_version: v1.5.0
+      duckdb_version: v2.0.0
+      ci_tools_version: v2.0-cyanoptera
       extension_name: nsv
       format_checks: 'format;tidy'
 
@@ -44,14 +44,14 @@ jobs:
       - name: Download wasm_eh artifact
         uses: actions/download-artifact@v4
         with:
-          name: nsv-v1.5.1-extension-wasm_eh
+          name: nsv-v2.0.0-extension-wasm_eh
           path: extension
 
       - name: Inspect artifact
         run: ls -laR extension/
 
       - name: Install dependencies
-        run: npm install @duckdb/duckdb-wasm@1.33.1-dev41.0 playwright esbuild
+        run: npm install @duckdb/duckdb-wasm@1.33.1-dev110.0 playwright esbuild
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
@@ -95,13 +95,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          pattern: nsv-v1.5.1-extension-*
+          pattern: nsv-v2.0.0-extension-*
 
       - name: Prepare release assets
         run: |
           mkdir -p release
           for dir in artifacts/*/; do
-            arch=$(basename "$dir" | sed 's/nsv-v1.5.1-extension-//')
+            arch=$(basename "$dir" | sed 's/nsv-v2.0.0-extension-//')
             for file in "$dir"*; do
               if [ -f "$file" ]; then
                 ext="${file##*.}"
